@@ -1,0 +1,164 @@
+[
+  {
+    "id": "radio_ultra",
+    "name": "Радио ULTRA",
+    "genre": "Alternative Rock & Nu-Metal • Moscow",
+    "category": "rock",
+    "url": "https://nashe1.hostingradio.ru/ultra-128.mp3",
+    "format": "MP3 128k",
+    "icon": "⚡"
+  },
+  {
+    "id": "radio_maximum",
+    "name": "Радио MAXIMUM",
+    "genre": "Rock, Modern Rock & Alternative • Moscow",
+    "category": "rock",
+    "url": "https://maximum.hostingradio.ru/maximum128.mp3",
+    "format": "MP3 128k",
+    "icon": "⚡"
+  },
+  {
+    "id": "radio_rock_suomi",
+    "name": "Radio Rock Suomi",
+    "genre": "Rock / Heavy Metal • Supla",
+    "category": "rock",
+    "url": "https://aud-stream-radiorock.nm-elemental.nelonenmedia.fi/playlist.m3u8",
+    "format": "HLS HD",
+    "icon": "⚡"
+  },
+  {
+    "id": "radio_city",
+    "name": "Radio City (Finland)",
+    "genre": "Classic Rock & Metal • Live",
+    "category": "rock",
+    "url": "https://streaming.radioplay.fi/radiocity/hml_128.mp3?direct=true",
+    "format": "MP3 128k",
+    "icon": "🎸"
+  },
+  {
+    "id": "rock_antenne_classic_perlen",
+    "name": "Rock Antenne Road Perlen",
+    "genre": "Classic Rock & Highway Hits • Road Trip",
+    "category": "rock",
+    "url": "https://stream.rockantenne.de/classic-perlen/stream/mp3",
+    "format": "MP3 128k",
+    "icon": "🛣️"
+  },
+  {
+    "id": "star_fm_from_hell",
+    "name": "Star FM - From Hell",
+    "genre": "Heavy Metal & Hard Rock • Berlin",
+    "category": "rock",
+    "url": "https://stream.starfm.de/fromhell/mp3-192",
+    "format": "MP3 192k",
+    "icon": "🔥"
+  },
+  {
+    "id": "rock_antenne_heavy_metal",
+    "name": "Rock Antenne Heavy Metal",
+    "genre": "Heavy Metal & Power • Germany",
+    "category": "rock",
+    "url": "https://stream.rockantenne.de/heavy-metal/stream/mp3",
+    "format": "MP3 128k",
+    "icon": "🤘"
+  },
+  {
+    "id": "ultra_dark_radio",
+    "name": "Ultra Dark Radio",
+    "genre": "Darkwave & NDT • Blutengel, Mantus",
+    "category": "goth",
+    "url": "https://stream.laut.fm/ultradarkradio",
+    "format": "MP3 128k",
+    "icon": "🩸"
+  },
+  {
+    "id": "on_gothic_radio",
+    "name": "0N Gothic Radio",
+    "genre": "Gothic Rock & Synth-Goth • Germany",
+    "category": "goth",
+    "url": "https://0n-gothic.radionetz.de/0n-gothic.mp3",
+    "format": "MP3 128k",
+    "icon": "🕸️"
+  },
+  {
+    "id": "rock_antenne_gothic",
+    "name": "Rock Antenne Gothic",
+    "genre": "Gothic Rock & Dark Alternative",
+    "category": "goth",
+    "url": "https://s6-webradio.rockantenne.de/gothic/stream/mp3",
+    "format": "MP3 128k",
+    "icon": "🦇"
+  },
+  {
+    "id": "radio_bob_gothic",
+    "name": "Radio BOB! Gothic Rock",
+    "genre": "Gothic Rock & Post-Punk • Germany",
+    "category": "goth",
+    "url": "https://streams.radiobob.de/gothic/mp3-192/streams.radiobob.de/",
+    "format": "MP3 192k",
+    "icon": "🕯️"
+  },
+  {
+    "id": "dark_metal_radio",
+    "name": "Dark Metal-Radio",
+    "genre": "Gothic Metal & Symphonic Dark",
+    "category": "goth",
+    "url": "https://stream.laut.fm/dark-metal-radio",
+    "format": "MP3 128k",
+    "icon": "⚰️"
+  },
+  {
+    "id": "electrozombies",
+    "name": "ElectroZombies",
+    "genre": "Darkwave & Gothic Synth • Germany",
+    "category": "goth",
+    "url": "https://stream.laut.fm/electrozombies",
+    "format": "MP3 128k",
+    "icon": "☣️"
+  },
+  {
+    "id": "synthwave_radio",
+    "name": "Synthwave Radio 24/7",
+    "genre": "Retro Synth & Cyberpunk 24/7",
+    "category": "synth",
+    "url": "https://stream.synthwaveradio.eu/listen/synthwaveradio.eu/radio.mp3",
+    "format": "MP3 320k",
+    "icon": "🌆"
+  },
+  {
+    "id": "nightride_fm",
+    "name": "Nightride FM",
+    "genre": "Synthwave & Chillwave 320k Ultra HD",
+    "category": "synth",
+    "url": "https://stream.nightride.fm/nightride.mp3",
+    "format": "MP3 320k",
+    "icon": "🚀"
+  },
+  {
+    "id": "nightride_datawave",
+    "name": "Datawave (Darksynth)",
+    "genre": "Darksynth, Cyberpunk & EBM 320k",
+    "category": "synth",
+    "url": "https://stream.nightride.fm/datawave.mp3",
+    "format": "MP3 320k",
+    "icon": "💾"
+  },
+  {
+    "id": "darksynth_radio",
+    "name": "Darksynth Radio",
+    "genre": "Raw Dark Synth & Industrial Beats",
+    "category": "synth",
+    "url": "https://stream.laut.fm/darksynthradio",
+    "format": "MP3 128k",
+    "icon": "🕹️"
+  },
+  {
+    "id": "deep_one_radio",
+    "name": "DEEP ONE Radio",
+    "genre": "Deep House, Atmospheric & Melodic Chill • deep1.ru",
+    "category": "synth",
+    "url": "https://stream.deep1.ru/deep1mp3",
+    "format": "MP3 128k",
+    "icon": "🎧"
+  }
+]

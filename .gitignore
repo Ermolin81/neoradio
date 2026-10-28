@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+android/
+build/
+dist/
+*.exe
+*.bak*
+scratch*
+*.log

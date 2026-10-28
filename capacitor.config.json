@@ -1,0 +1,9 @@
+{
+  "appId": "com.neoradio.carplayer",
+  "appName": "NeoRadio",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  }
+}
