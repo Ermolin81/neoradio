@@ -1321,7 +1321,15 @@
     let hls = null;
     let trackInfoTimer = null;
     function checkIsNativeAndroid() {
-      return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+      if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
+        return true;
+      }
+      if (typeof navigator !== 'undefined' && navigator.userAgent) {
+        if (/Android/i.test(navigator.userAgent) && (window.location.hostname === 'localhost' || window.location.protocol === 'capacitor:')) {
+          return true;
+        }
+      }
+      return false;
     }
     let isNativeAndroid = checkIsNativeAndroid();
     let nativeRadioInitialized = false;
@@ -1342,7 +1350,9 @@
       // Handle station transitions triggered natively (e.g. car steering wheel AVRCP Next/Prev)
       nr.addListener('stationChanged', (data) => {
         if (data && typeof data.index === 'number' && data.index >= 0 && data.index < stations.length) {
-          onNativeStationChanged(data.index);
+          if (data.index !== currentStationIndex) {
+            onNativeStationChanged(data.index, data.isPlaying);
+          }
         }
       });
 
@@ -1378,7 +1388,7 @@
       }).catch(err => console.warn('NativeRadio setPlaylist error:', err));
     }
 
-    function onNativeStationChanged(index) {
+    function onNativeStationChanged(index, isNowPlaying) {
       if (index < 0 || index >= stations.length) return;
       currentStationIndex = index;
       const s = stations[index];
@@ -1395,13 +1405,23 @@
       // Trigger track metadata query for new station immediately
       pollTrackMetadata();
 
-      // Update UI on-air status
-      isPlaying = true;
-      showPlayIcon(false);
-      document.body.classList.add('is-playing');
-      document.getElementById('equalizer').classList.add('playing');
-      setUiStatus('● В ЭФИРЕ', true);
-      startTrackInfoLoop();
+      // Update UI on-air status based on whether native player is playing
+      const playing = (typeof isNowPlaying === 'boolean') ? isNowPlaying : isPlaying;
+      if (playing) {
+        isPlaying = true;
+        showPlayIcon(false);
+        document.body.classList.add('is-playing');
+        document.getElementById('equalizer').classList.add('playing');
+        setUiStatus('● В ЭФИРЕ', true);
+        startTrackInfoLoop();
+      } else {
+        isPlaying = false;
+        showPlayIcon(true);
+        document.body.classList.remove('is-playing');
+        document.getElementById('equalizer').classList.remove('playing');
+        setUiStatus('ПАУЗА', false);
+        stopTrackInfoLoop();
+      }
     }
 
     function onNativePlaybackStateChanged(playing) {
@@ -1711,6 +1731,7 @@
       }
 
 
+      isNativeAndroid = checkIsNativeAndroid();
       await loadFavorites();
       if (!isNativeAndroid) {
         setupMediaSessionHandlers();
@@ -1912,7 +1933,8 @@
 
     async function pollTrackMetadata() {
       if (!isPlaying || currentStationIndex < 0) return;
-      const s = stations[currentStationIndex];
+      const targetIndex = currentStationIndex;
+      const s = stations[targetIndex];
       if (!s) return;
 
       try {
@@ -1922,6 +1944,9 @@
         } else {
           info = await fetchWebTrackInfo(s);
         }
+
+        // Drop stale results if user switched stations while fetching
+        if (currentStationIndex !== targetIndex) return;
           
         // If polling temporarily failed or returned null, do NOT wipe UI or MediaSession - preserve currently playing track!
         if (!info) return;
@@ -2652,6 +2677,7 @@
     }
 
     // Native MediaSession API for Car Bluetooth & Mobile Lock Screen Controls
+    let _lastMediaStationIndex = -1;
     let _lastMediaTitle = '';
     let _lastMediaArtist = '';
     let _lastMediaArt = '';
@@ -2664,9 +2690,10 @@
       const art = (meta && meta.art) ? meta.art : '';
 
       // Skip redundant updates to prevent Android AudioFocus glitches/stalls
-      if (_lastMediaTitle === title && _lastMediaArtist === artist && _lastMediaArt === art) {
+      if (_lastMediaStationIndex === currentStationIndex && _lastMediaTitle === title && _lastMediaArtist === artist && _lastMediaArt === art) {
         return;
       }
+      _lastMediaStationIndex = currentStationIndex;
       _lastMediaTitle = title;
       _lastMediaArtist = artist;
       _lastMediaArt = art;

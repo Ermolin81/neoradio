@@ -23,6 +23,7 @@ import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionResult
 
 @OptIn(UnstableApi::class)
 class RadioService : MediaSessionService() {
@@ -72,10 +73,17 @@ class RadioService : MediaSessionService() {
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
                 if (player.playWhenReady) {
-                    shouldResumeOnNetwork = true
+                    if (!isNetworkConnected()) {
+                        shouldResumeOnNetwork = true
+                    } else {
+                        Handler(Looper.getMainLooper()).postDelayed({
+                            if (player.playWhenReady && player.mediaItemCount > 0) {
+                                player.prepare()
+                                player.play()
+                            }
+                        }, 2000L)
+                    }
                 }
-                player.prepare()
-                player.play()
             }
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
@@ -127,7 +135,32 @@ class RadioService : MediaSessionService() {
             e.printStackTrace()
         }
 
-        mediaSession = MediaSession.Builder(this, player).build()
+        mediaSession = MediaSession.Builder(this, player)
+            .setCallback(object : MediaSession.Callback {
+                override fun onPlayerCommandRequest(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo,
+                    playerCommand: Int
+                ): Int {
+                    if (playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS) {
+                        player.seekToPreviousMediaItem()
+                        return SessionResult.RESULT_INFO_SKIPPED
+                    }
+                    if (playerCommand == Player.COMMAND_SEEK_TO_NEXT) {
+                        player.seekToNextMediaItem()
+                        return SessionResult.RESULT_INFO_SKIPPED
+                    }
+                    return super.onPlayerCommandRequest(session, controller, playerCommand)
+                }
+            })
+            .build()
+    }
+
+    private fun isNetworkConnected(): Boolean {
+        val cm = connectivityManager ?: return true
+        val activeNetwork = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession

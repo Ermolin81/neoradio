@@ -24,6 +24,7 @@ class NativeRadioPlugin : Plugin() {
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var listenerAttached = false
+    private var lastMediaItemIndex = -1
 
     override fun load() {
         val sessionToken = SessionToken(context, ComponentName(context, RadioService::class.java))
@@ -46,13 +47,18 @@ class NativeRadioPlugin : Plugin() {
     private fun attachPlayerListener(ctrl: MediaController) {
         if (listenerAttached) return
         listenerAttached = true
+        lastMediaItemIndex = ctrl.currentMediaItemIndex
         ctrl.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val idx = ctrl.currentMediaItemIndex
-                val ret = JSObject()
-                ret.put("index", idx)
-                ret.put("reason", reason)
-                notifyListeners("stationChanged", ret)
+                if (idx != lastMediaItemIndex) {
+                    lastMediaItemIndex = idx
+                    val ret = JSObject()
+                    ret.put("index", idx)
+                    ret.put("reason", reason)
+                    ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
+                    notifyListeners("stationChanged", ret)
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -157,6 +163,7 @@ class NativeRadioPlugin : Plugin() {
 
         withController(call) { ctrl ->
             val validIndex = if (startIndex in 0 until mediaItems.size) startIndex else 0
+            lastMediaItemIndex = validIndex
             ctrl.setMediaItems(mediaItems, validIndex, 0L)
             ctrl.prepare()
             if (autoPlay) {
@@ -171,6 +178,7 @@ class NativeRadioPlugin : Plugin() {
         val index = call.getInt("index") ?: return call.reject("Missing index")
         withController(call) { ctrl ->
             if (index in 0 until ctrl.mediaItemCount) {
+                lastMediaItemIndex = index
                 ctrl.seekToDefaultPosition(index)
                 ctrl.prepare()
                 ctrl.play()
@@ -198,6 +206,8 @@ class NativeRadioPlugin : Plugin() {
                     try {
                         metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
                     } catch (e: Exception) {}
+                } else if (artwork != null && artwork.isEmpty()) {
+                    metaBuilder.setArtworkUri(null)
                 }
                 val updatedItem = currentItem.buildUpon()
                     .setMediaMetadata(metaBuilder.build())
