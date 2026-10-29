@@ -21,6 +21,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.upstream.DefaultLoadErrorHandlingPolicy
 import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
@@ -46,13 +47,17 @@ class RadioService : MediaSessionService() {
             .setBufferDurationsMs(15_000, 45_000, 2_500, 5_000)
             .build()
 
-        // 2. Сетевой стек с авто-ретраями при смене вышек 4G
+        // 2. Сетевой стек с авто-ретраями при смене вышек 4G и мобильным User-Agent
         val httpDataSourceFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36")
             .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(8_000)
-            .setReadTimeoutMs(8_000)
+            .setConnectTimeoutMs(15_000)
+            .setReadTimeoutMs(15_000)
 
-        val mediaSourceFactory = DefaultMediaSourceFactory(this)
+        val extractorsFactory = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+
+        val mediaSourceFactory = DefaultMediaSourceFactory(this, extractorsFactory)
             .setDataSourceFactory(httpDataSourceFactory)
             .setLoadErrorHandlingPolicy(object : DefaultLoadErrorHandlingPolicy() {
                 override fun getMinimumLoadableRetryCount(dataType: Int): Int = 10
@@ -77,6 +82,7 @@ class RadioService : MediaSessionService() {
 
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                android.util.Log.e("RadioService", "ExoPlayer error [${error.errorCodeName}]: ${error.message}", error)
                 if (player.playWhenReady) {
                     if (!isNetworkConnected()) {
                         shouldResumeOnNetwork = true

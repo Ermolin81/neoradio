@@ -108,6 +108,31 @@ class NativeRadioPlugin : Plugin() {
         }
     }
 
+    private fun createMediaItem(url: String, title: String, artist: String, artwork: String?): MediaItem {
+        val metaBuilder = MediaMetadata.Builder()
+            .setTitle(title)
+            .setArtist(artist)
+
+        if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://") || artwork.startsWith("content://"))) {
+            try {
+                metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
+            } catch (e: Exception) {}
+        }
+
+        val mimeType = when {
+            url.contains(".m3u8") || url.contains("m3u8") -> androidx.media3.common.MimeTypes.APPLICATION_M3U8
+            url.contains(".aac") || url.contains("aac") -> androidx.media3.common.MimeTypes.AUDIO_AAC
+            url.contains(".ogg") || url.contains("ogg") -> androidx.media3.common.MimeTypes.AUDIO_OGG
+            else -> androidx.media3.common.MimeTypes.AUDIO_MPEG
+        }
+
+        return MediaItem.Builder()
+            .setUri(url)
+            .setMimeType(mimeType)
+            .setMediaMetadata(metaBuilder.build())
+            .build()
+    }
+
     @PluginMethod
     fun setPlaylist(call: PluginCall) {
         val stationsArray = call.getArray("stations")
@@ -147,20 +172,7 @@ class NativeRadioPlugin : Plugin() {
                 null
             }
 
-            val metaBuilder = MediaMetadata.Builder()
-                .setTitle(title)
-                .setArtist(artist)
-
-            if (!artUri.isNullOrEmpty() && (artUri.startsWith("http://") || artUri.startsWith("https://") || artUri.startsWith("content://"))) {
-                try {
-                    metaBuilder.setArtworkUri(android.net.Uri.parse(artUri))
-                } catch (e: Exception) {}
-            }
-
-            val item = MediaItem.Builder()
-                .setUri(url)
-                .setMediaMetadata(metaBuilder.build())
-                .build()
+            val item = createMediaItem(url, title, artist, artUri)
             mediaItems.add(item)
         }
 
@@ -233,25 +245,8 @@ class NativeRadioPlugin : Plugin() {
 
         withController(call) { ctrl ->
             if (url != null) {
-                val metaBuilder = MediaMetadata.Builder()
-                    .setTitle(title)
-                    .setArtist(artist)
-
-                if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://"))) {
-                    try {
-                        metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
-                    } catch (e: Exception) {}
-                }
-
-                val itemBuilder = MediaItem.Builder()
-                    .setUri(url)
-                    .setMediaMetadata(metaBuilder.build())
-
-                if (url.contains(".m3u8")) {
-                    itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
-                }
-
-                ctrl.setMediaItem(itemBuilder.build())
+                val item = createMediaItem(url, title, artist, artwork)
+                ctrl.setMediaItem(item)
                 ctrl.prepare()
                 ctrl.play()
             } else {
