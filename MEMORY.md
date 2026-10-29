@@ -43,3 +43,16 @@
 4. **Сборка и развертывание:**
    - Десктоп: `NeoRadio.exe` (9.2 МБ, PyInstaller, Python 3.10).
    - Мобильный веб: `https://neoradio.shipstatic.com` (ShipStatic).
+   - Нативный Android APK для авто: репозиторий `https://github.com/Ermolin81/neoradio`, автоматическая облачная сборка через GitHub Actions (`.github/workflows/build-apk.yml`).
+
+## 4. Нативное Android-приложение (ExoPlayer + Media3) для авто
+- **Причина перехода с PWA:** В мобильном браузере при движении в авто сотовые вышки переключаются (TCP half-open), а голосовые подсказки Яндекс.Навигатора глушат стрим без возврата. Браузер не умеет аппаратный Ducking (приглушение).
+- **Реализация:**
+  - Гибридная архитектура на Capacitor 6: веб-интерфейс крутится в WebView, но воспроизведение звука на Android делегировано нативному Kotlin-сервису `RadioService` (`MediaSessionService`).
+  - `RadioService.kt`:
+    1. Буфер воспроизведения 45 секунд в памяти (`DefaultLoadControl`), старт после 2.5 сек — мертвые зоны 4G и туннели проезжаются без единого заикания.
+    2. Автоматический ретрай сокета до 10 попыток с задержкой 1.5 сек при смене вышек LTE.
+    3. Аппаратный Ducking: `AudioAttributes` с `C.USAGE_MEDIA` и `handleAudioFocus = true`. Подсказки навигатора плавно опускают громкость радио до 20% и возвращают обратно без остановки потока.
+    4. Пауза при отключении Bluetooth (`setHandleAudioBecomingNoisy(true)`).
+  - Сборка: GitHub Actions компилирует чистый `app-debug.apk` в облаке за 1.5–2 минуты без локальной установки Android Studio на ПК. Готовый APK скачивается из артефактов сборки.
+- **Готовый файл:** `P:\online_radio\NeoRadio-Car.apk` и `C:\Users\Max\Desktop\NeoRadio-Car.apk` (7.6 МБ).
