@@ -1,6 +1,13 @@
 package com.neoradio.carplayer
 
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Handler
+import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
@@ -17,11 +24,14 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 
+@OptIn(UnstableApi::class)
 class RadioService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var player: ExoPlayer
+    private var connectivityManager: ConnectivityManager? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private var shouldResumeOnNetwork = false
 
-    @OptIn(UnstableApi::class)
     override fun onCreate() {
         super.onCreate()
 
@@ -56,12 +66,66 @@ class RadioService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true) // Пауза при отвале Bluetooth в машине
             .build()
 
+        // 4. Закольцованный плейлист для аппаратных кнопок руля (Next / Prev по AVRCP)
+        player.repeatMode = Player.REPEAT_MODE_ALL
+
         player.addListener(object : Player.Listener {
             override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                if (player.playWhenReady) {
+                    shouldResumeOnNetwork = true
+                }
                 player.prepare()
                 player.play()
             }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                if (!playWhenReady) {
+                    shouldResumeOnNetwork = false
+                }
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    shouldResumeOnNetwork = false
+                }
+            }
         })
+
+        // 5. Умный реконнект при выезде из туннелей и слепых зон 4G
+        try {
+            connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val networkRequest = NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+
+            networkCallback = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    Handler(Looper.getMainLooper()).post {
+                        if (shouldResumeOnNetwork) {
+                            shouldResumeOnNetwork = false
+                            if (player.mediaItemCount > 0) {
+                                player.seekToDefaultPosition()
+                                player.prepare()
+                                player.play()
+                            }
+                        }
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    Handler(Looper.getMainLooper()).post {
+                        if (player.playWhenReady) {
+                            shouldResumeOnNetwork = true
+                        }
+                    }
+                }
+            }
+            networkCallback?.let {
+                connectivityManager?.registerNetworkCallback(networkRequest, it)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
 
         mediaSession = MediaSession.Builder(this, player).build()
     }
@@ -75,6 +139,12 @@ class RadioService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        try {
+            networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        networkCallback = null
         mediaSession?.run {
             player.release()
             release()

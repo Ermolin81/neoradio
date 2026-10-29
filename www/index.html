@@ -1320,7 +1320,108 @@
     let isPlaying = false;
     let hls = null;
     let trackInfoTimer = null;
-    const isNativeAndroid = !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+    function checkIsNativeAndroid() {
+      return !!(window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform());
+    }
+    let isNativeAndroid = checkIsNativeAndroid();
+    let nativeRadioInitialized = false;
+
+    function setupNativeRadio() {
+      if (!isNativeAndroid) {
+        isNativeAndroid = checkIsNativeAndroid();
+        if (!isNativeAndroid) return;
+      }
+      if (nativeRadioInitialized) return;
+      if (!window.Capacitor || !window.Capacitor.Plugins || !window.Capacitor.Plugins.NativeRadio) {
+        setTimeout(setupNativeRadio, 150);
+        return;
+      }
+      nativeRadioInitialized = true;
+      const nr = window.Capacitor.Plugins.NativeRadio;
+
+      // Handle station transitions triggered natively (e.g. car steering wheel AVRCP Next/Prev)
+      nr.addListener('stationChanged', (data) => {
+        if (data && typeof data.index === 'number' && data.index >= 0 && data.index < stations.length) {
+          onNativeStationChanged(data.index);
+        }
+      });
+
+      // Handle playback state changes from native ExoPlayer (play, pause, audio focus)
+      nr.addListener('playbackStateChanged', (data) => {
+        if (data && typeof data.isPlaying === 'boolean') {
+          onNativePlaybackStateChanged(data.isPlaying);
+        }
+      });
+
+      // Synchronize initial playlist with ExoPlayer
+      if (stations && stations.length > 0) {
+        syncPlaylistToNative(currentStationIndex >= 0 ? currentStationIndex : 0, false);
+      }
+    }
+
+    function syncPlaylistToNative(startIndex = 0, autoPlay = false) {
+      if (!isNativeAndroid || !window.Capacitor || !window.Capacitor.Plugins || !window.Capacitor.Plugins.NativeRadio) return;
+      if (!stations || stations.length === 0) return;
+
+      const playlist = stations.map(s => ({
+        url: s.url,
+        title: s.name,
+        name: s.name,
+        artist: s.genre || 'NeoRadio Live',
+        genre: s.genre || 'NeoRadio Live'
+      }));
+
+      window.Capacitor.Plugins.NativeRadio.setPlaylist({
+        stations: playlist,
+        startIndex: startIndex,
+        autoPlay: autoPlay
+      }).catch(err => console.warn('NativeRadio setPlaylist error:', err));
+    }
+
+    function onNativeStationChanged(index) {
+      if (index < 0 || index >= stations.length) return;
+      currentStationIndex = index;
+      const s = stations[index];
+
+      // Update header station tag & avatar
+      const tag = document.getElementById('np-station-tag');
+      if (tag) tag.innerText = s.name;
+      const avatar = document.getElementById('hero-avatar');
+      if (avatar) avatar.innerText = s.icon || '🎸';
+      resetTrackMetadataDisplay(s);
+
+      renderStations();
+
+      // Trigger track metadata query for new station immediately
+      pollTrackMetadata();
+
+      // Update UI on-air status
+      isPlaying = true;
+      showPlayIcon(false);
+      document.body.classList.add('is-playing');
+      document.getElementById('equalizer').classList.add('playing');
+      setUiStatus('● В ЭФИРЕ', true);
+      startTrackInfoLoop();
+    }
+
+    function onNativePlaybackStateChanged(playing) {
+      isPlaying = playing;
+      if (playing) {
+        showPlayIcon(false);
+        document.body.classList.add('is-playing');
+        document.getElementById('equalizer').classList.add('playing');
+        setUiStatus('● В ЭФИРЕ', true);
+        startTrackInfoLoop();
+      } else {
+        showPlayIcon(true);
+        document.body.classList.remove('is-playing');
+        document.getElementById('equalizer').classList.remove('playing');
+        setUiStatus('ПАУЗА', false);
+        stopTrackInfoLoop();
+      }
+      renderStations();
+    }
+
     const player = document.getElementById('audio-player');
     let previousVolume = 85;
     let currentVol = 85;
@@ -1407,6 +1508,7 @@
                 localStorage.setItem('neoradio_stations_cache', JSON.stringify(stations));
               } catch (e) {}
               renderStations();
+              if (isNativeAndroid) syncPlaylistToNative(currentStationIndex >= 0 ? currentStationIndex : 0, isPlaying);
               return true;
             }
           }
@@ -1610,13 +1712,18 @@
 
 
       await loadFavorites();
-      setupMediaSessionHandlers();
+      if (!isNativeAndroid) {
+        setupMediaSessionHandlers();
+      }
       setupTabsScroll();
       setupVolumeWheel();
       changeVolume(85);
       renderStations();
       if (stations.length > 0) {
         selectStation(0, false);
+      }
+      if (isNativeAndroid) {
+        setupNativeRadio();
       }
     }
 
@@ -2079,6 +2186,25 @@
         clearTimeout(reconnectTimer);
         reconnectTimer = null;
       }
+      // Native Android APK: delegate audio streaming to background ExoPlayer service
+      if (isNativeAndroid) {
+        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
+          window.Capacitor.Plugins.NativeRadio.selectStation({
+            index: currentStationIndex
+          }).catch(err => {
+            console.warn('NativeRadio selectStation error, falling back to syncPlaylistToNative:', err);
+            syncPlaylistToNative(currentStationIndex, true);
+          });
+        }
+        isPlaying = true;
+        showPlayIcon(false);
+        document.body.classList.add('is-playing');
+        document.getElementById('equalizer').classList.add('playing');
+        setUiStatus('● В ЭФИРЕ', true);
+        startTrackInfoLoop();
+        return;
+      }
+
       const wasHls = !!hls;
       if (hls) {
         try {
@@ -2094,22 +2220,6 @@
       if (!wasHls) {
         player.removeAttribute('src');
         player.load();
-      }
-
-      // Native Android APK: delegate audio streaming to background ExoPlayer service
-      if (isNativeAndroid && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
-        window.Capacitor.Plugins.NativeRadio.play({
-          url: s.url,
-          title: s.name,
-          artist: s.genre || 'NeoRadio Live'
-        }).catch(err => console.warn('NativeRadio play error:', err));
-        isPlaying = true;
-        showPlayIcon(false);
-        document.body.classList.add('is-playing');
-        document.getElementById('equalizer').classList.add('playing');
-        setUiStatus('● В ЭФИРЕ', true);
-        startTrackInfoLoop();
-        return;
       }
 
       setUiStatus('ПОДКЛЮЧЕНИЕ...', false);
@@ -2207,6 +2317,11 @@
       stopTrackInfoLoop();
       if (isNativeAndroid && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
         window.Capacitor.Plugins.NativeRadio.pause().catch(() => {});
+        showPlayIcon(true);
+        document.body.classList.remove('is-playing');
+        document.getElementById('equalizer').classList.remove('playing');
+        setUiStatus('ПАУЗА', false);
+        return;
       }
       if (hls) {
         try { hls.stopLoad(); } catch(e) {}
@@ -2219,7 +2334,7 @@
       document.body.classList.remove('is-playing');
       document.getElementById('equalizer').classList.remove('playing');
       setUiStatus('ПАУЗА', false);
-      if ('mediaSession' in navigator) {
+      if (!isNativeAndroid && 'mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'paused';
       }
     }
@@ -2233,6 +2348,14 @@
       stopTrackInfoLoop();
       if (isNativeAndroid && window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
         window.Capacitor.Plugins.NativeRadio.stop().catch(() => {});
+        showPlayIcon(true);
+        document.body.classList.remove('is-playing');
+        document.getElementById('equalizer').classList.remove('playing');
+        setUiStatus('ОСТАНОВЛЕНО', false);
+        if (currentStationIndex >= 0 && stations[currentStationIndex]) {
+          resetTrackMetadataDisplay(stations[currentStationIndex]);
+        }
+        return;
       }
       if (hls) {
         try {
@@ -2253,7 +2376,7 @@
       if (currentStationIndex >= 0 && stations[currentStationIndex]) {
         resetTrackMetadataDisplay(stations[currentStationIndex]);
       }
-      if ('mediaSession' in navigator) {
+      if (!isNativeAndroid && 'mediaSession' in navigator) {
         navigator.mediaSession.playbackState = 'none';
       }
     }
@@ -2283,6 +2406,7 @@
     // Media element event listeners
     let bufferTimer = null;
     player.addEventListener('playing', () => {
+      if (isNativeAndroid) return;
       if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
       if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       isPlaying = true;
@@ -2296,11 +2420,13 @@
     });
 
     player.addEventListener('canplay', () => {
+      if (isNativeAndroid) return;
       if (bufferTimer) { clearTimeout(bufferTimer); bufferTimer = null; }
       if (isPlaying) setUiStatus('● В ЭФИРЕ', true);
     });
 
     player.addEventListener('timeupdate', () => {
+      if (isNativeAndroid) return;
       if (isPlaying && bufferTimer) {
         clearTimeout(bufferTimer);
         bufferTimer = null;
@@ -2309,6 +2435,7 @@
     });
 
     player.addEventListener('waiting', () => {
+      if (isNativeAndroid) return;
       if (bufferTimer) clearTimeout(bufferTimer);
       bufferTimer = setTimeout(() => {
         if (isPlaying) setUiStatus('БУФЕРИЗАЦИЯ...', false);
@@ -2317,6 +2444,7 @@
 
     // Handle OS-level pauses (calls, navigation prompts, Bluetooth disconnect)
     player.addEventListener('pause', () => {
+      if (isNativeAndroid) return;
       if (isPlaying) {
         pauseAudio();
       }
@@ -2324,14 +2452,17 @@
 
     // Handle cellular drops and socket closures
     player.addEventListener('ended', () => {
+      if (isNativeAndroid) return;
       if (isPlaying) scheduleReconnect();
     });
 
     player.addEventListener('stalled', () => {
+      if (isNativeAndroid) return;
       if (isPlaying) scheduleReconnect();
     });
 
     player.addEventListener('error', (e) => {
+      if (isNativeAndroid) return;
       if (!player.getAttribute('src') || player.getAttribute('src') === '') return;
       console.warn('Player event error', player.error);
       if (isPlaying) {
@@ -2477,6 +2608,9 @@
       };
 
       stations.push(newStation);
+      if (isNativeAndroid) {
+        syncPlaylistToNative(stations.length - 1, true);
+      }
 
       if (window.pywebview && window.pywebview.api) {
         try {
@@ -2523,7 +2657,7 @@
     let _lastMediaArt = '';
 
     function updateMediaSession(s, meta) {
-      if (!('mediaSession' in navigator) || !s) return;
+      if (!s) return;
       const title = (meta && meta.title) ? meta.title : s.name;
       const artist = (meta && meta.artist) ? meta.artist : (s.genre || 'NeoRadio');
       const album = (meta && meta.album) ? meta.album : s.name;
@@ -2536,6 +2670,21 @@
       _lastMediaTitle = title;
       _lastMediaArtist = artist;
       _lastMediaArt = art;
+
+      // Native Android APK: update ExoPlayer MediaSession metadata on car head unit screen
+      if (isNativeAndroid) {
+        if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
+          window.Capacitor.Plugins.NativeRadio.updateMetadata({
+            title: title,
+            artist: artist,
+            artwork: art,
+            index: currentStationIndex
+          }).catch(err => console.warn('NativeRadio updateMetadata error:', err));
+        }
+        return;
+      }
+
+      if (!('mediaSession' in navigator)) return;
 
       let artwork = [];
       try {
@@ -2571,6 +2720,7 @@
     }
 
     function setupMediaSessionHandlers() {
+      if (isNativeAndroid) return;
       if (!('mediaSession' in navigator)) return;
       const actions = [
         ['play', () => togglePlay()],

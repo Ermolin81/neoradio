@@ -54,5 +54,11 @@
     2. Автоматический ретрай сокета до 10 попыток с задержкой 1.5 сек при смене вышек LTE.
     3. Аппаратный Ducking: `AudioAttributes` с `C.USAGE_MEDIA` и `handleAudioFocus = true`. Подсказки навигатора плавно опускают громкость радио до 20% и возвращают обратно без остановки потока.
     4. Пауза при отключении Bluetooth (`setHandleAudioBecomingNoisy(true)`).
+    5. Закольцованный плейлист (`player.repeatMode = Player.REPEAT_MODE_ALL`): аппаратные кнопки руля (Next / Prev по Bluetooth AVRCP) активны всегда и бесшовно переключают станции по кругу нативно в Android MediaSession.
+    6. Умный реконнект в туннелях: мониторинг `ConnectivityManager.NetworkCallback` (NET_CAPABILITY_INTERNET) с автоматическим переподключением (`seekToDefaultPosition()`, `prepare()`, `play()`) при восстановлении 4G/LTE.
+  - `NativeRadioPlugin.kt` & `index.html`:
+    1. Исключено задвоение звука (эхо на Радио ULTRA): в Android-приложении HTML5 `<audio>` и `navigator.mediaSession` наглухо отключены (`if (!isNativeAndroid)`), Chromium не создает конкурирующую медиа-сессию.
+    2. Метаданные (название трека, артист, обложка) обновляются через `ctrl.replaceMediaItem(index, updatedItem)` без рестарта аудио-потока и сокета Icecast.
+    3. Двусторонняя синхронизация: слушатели `Player.Listener` (`onMediaItemTransition`, `onIsPlayingChanged`) моментально обновляют карточки станций и статус UI при переключении кнопками с руля авто.
   - Сборка: GitHub Actions компилирует чистый `app-debug.apk` в облаке за 1.5–2 минуты без локальной установки Android Studio на ПК. Готовый APK скачивается из артефактов сборки.
 - **Готовый файл:** `P:\online_radio\NeoRadio-Car.apk` и `C:\Users\Max\Desktop\NeoRadio-Car.apk` (7.6 МБ).
