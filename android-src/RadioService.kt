@@ -25,6 +25,11 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import androidx.media3.session.SessionResult
 
+object MediaButtonBus {
+    var onNext: (() -> Unit)? = null
+    var onPrev: (() -> Unit)? = null
+}
+
 @OptIn(UnstableApi::class)
 class RadioService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
@@ -137,17 +142,32 @@ class RadioService : MediaSessionService() {
 
         mediaSession = MediaSession.Builder(this, player)
             .setCallback(object : MediaSession.Callback {
+                override fun onConnect(
+                    session: MediaSession,
+                    controller: MediaSession.ControllerInfo
+                ): MediaSession.ConnectionResult {
+                    val playerCommands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                        .add(Player.COMMAND_SEEK_TO_NEXT)
+                        .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+                        .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+                        .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+                        .build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailablePlayerCommands(playerCommands)
+                        .build()
+                }
+
                 override fun onPlayerCommandRequest(
                     session: MediaSession,
                     controller: MediaSession.ControllerInfo,
                     playerCommand: Int
                 ): Int {
-                    if (playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS) {
-                        player.seekToPreviousMediaItem()
+                    if (playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS || playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) {
+                        MediaButtonBus.onPrev?.invoke()
                         return SessionResult.RESULT_INFO_SKIPPED
                     }
-                    if (playerCommand == Player.COMMAND_SEEK_TO_NEXT) {
-                        player.seekToNextMediaItem()
+                    if (playerCommand == Player.COMMAND_SEEK_TO_NEXT || playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) {
+                        MediaButtonBus.onNext?.invoke()
                         return SessionResult.RESULT_INFO_SKIPPED
                     }
                     return super.onPlayerCommandRequest(session, controller, playerCommand)

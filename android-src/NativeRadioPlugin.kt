@@ -33,15 +33,22 @@ class NativeRadioPlugin : Plugin() {
             try {
                 val ctrl = controllerFuture?.get()
                 controller = ctrl
-                if (ctrl != null) {
-                    Handler(Looper.getMainLooper()).post {
-                        attachPlayerListener(ctrl)
-                    }
-                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }, MoreExecutors.directExecutor())
+
+        // Аппаратные кнопки руля (Next / Prev через Bluetooth AVRCP)
+        MediaButtonBus.onNext = {
+            activity?.runOnUiThread {
+                notifyListeners("nextStation", JSObject())
+            }
+        }
+        MediaButtonBus.onPrev = {
+            activity?.runOnUiThread {
+                notifyListeners("prevStation", JSObject())
+            }
+        }
     }
 
     private fun attachPlayerListener(ctrl: MediaController) {
@@ -196,13 +203,12 @@ class NativeRadioPlugin : Plugin() {
         val artwork = call.getString("artwork") ?: call.getString("art")
 
         withController(call) { ctrl ->
-            val targetIndex = call.getInt("index") ?: ctrl.currentMediaItemIndex
-            if (targetIndex in 0 until ctrl.mediaItemCount) {
-                val currentItem = ctrl.getMediaItemAt(targetIndex)
+            val currentItem = ctrl.currentMediaItem
+            if (currentItem != null) {
                 val metaBuilder = currentItem.mediaMetadata.buildUpon()
                 if (!title.isNullOrEmpty()) metaBuilder.setTitle(title)
                 if (!artist.isNullOrEmpty()) metaBuilder.setArtist(artist)
-                if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://") || artwork.startsWith("content://"))) {
+                if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://"))) {
                     try {
                         metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
                     } catch (e: Exception) {}
@@ -212,11 +218,9 @@ class NativeRadioPlugin : Plugin() {
                 val updatedItem = currentItem.buildUpon()
                     .setMediaMetadata(metaBuilder.build())
                     .build()
-                ctrl.replaceMediaItem(targetIndex, updatedItem)
-                call.resolve()
-            } else {
-                call.reject("Index out of bounds: $targetIndex (count: ${ctrl.mediaItemCount})")
+                ctrl.replaceMediaItem(ctrl.currentMediaItemIndex, updatedItem)
             }
+            call.resolve()
         }
     }
 
@@ -225,20 +229,29 @@ class NativeRadioPlugin : Plugin() {
         val url = call.getString("url")
         val title = call.getString("title") ?: "Radio Stream"
         val artist = call.getString("artist") ?: "NeoRadio Live"
+        val artwork = call.getString("artwork") ?: call.getString("art")
 
         withController(call) { ctrl ->
             if (url != null) {
-                val metadata = MediaMetadata.Builder()
+                val metaBuilder = MediaMetadata.Builder()
                     .setTitle(title)
                     .setArtist(artist)
-                    .build()
 
-                val item = MediaItem.Builder()
+                if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://"))) {
+                    try {
+                        metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
+                    } catch (e: Exception) {}
+                }
+
+                val itemBuilder = MediaItem.Builder()
                     .setUri(url)
-                    .setMediaMetadata(metadata)
-                    .build()
+                    .setMediaMetadata(metaBuilder.build())
 
-                ctrl.setMediaItem(item)
+                if (url.contains(".m3u8")) {
+                    itemBuilder.setMimeType(androidx.media3.common.MimeTypes.APPLICATION_M3U8)
+                }
+
+                ctrl.setMediaItem(itemBuilder.build())
                 ctrl.prepare()
                 ctrl.play()
             } else {

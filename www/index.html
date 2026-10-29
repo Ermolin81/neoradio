@@ -1347,26 +1347,13 @@
       nativeRadioInitialized = true;
       const nr = window.Capacitor.Plugins.NativeRadio;
 
-      // Handle station transitions triggered natively (e.g. car steering wheel AVRCP Next/Prev)
-      nr.addListener('stationChanged', (data) => {
-        if (data && typeof data.index === 'number' && data.index >= 0 && data.index < stations.length) {
-          if (data.index !== currentStationIndex) {
-            onNativeStationChanged(data.index, data.isPlaying);
-          }
-        }
+      // Аппаратные кнопки руля (Next / Prev) переключают станции через наш родной JS-список
+      nr.addListener('nextStation', () => {
+        playNextStation();
       });
-
-      // Handle playback state changes from native ExoPlayer (play, pause, audio focus)
-      nr.addListener('playbackStateChanged', (data) => {
-        if (data && typeof data.isPlaying === 'boolean') {
-          onNativePlaybackStateChanged(data.isPlaying);
-        }
+      nr.addListener('prevStation', () => {
+        playPrevStation();
       });
-
-      // Synchronize initial playlist with ExoPlayer
-      if (stations && stations.length > 0) {
-        syncPlaylistToNative(currentStationIndex >= 0 ? currentStationIndex : 0, false);
-      }
     }
 
     function syncPlaylistToNative(startIndex = 0, autoPlay = false) {
@@ -2214,12 +2201,12 @@
       // Native Android APK: delegate audio streaming to background ExoPlayer service
       if (isNativeAndroid) {
         if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
-          window.Capacitor.Plugins.NativeRadio.selectStation({
-            index: currentStationIndex
-          }).catch(err => {
-            console.warn('NativeRadio selectStation error, falling back to syncPlaylistToNative:', err);
-            syncPlaylistToNative(currentStationIndex, true);
-          });
+          window.Capacitor.Plugins.NativeRadio.play({
+            url: s.url,
+            title: s.name,
+            artist: s.genre || 'NeoRadio Live',
+            art: s.art || ''
+          }).catch(err => console.warn('NativeRadio play error:', err));
         }
         isPlaying = true;
         showPlayIcon(false);
