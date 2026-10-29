@@ -35,6 +35,9 @@ jobs:
           cp android-src/RadioService.kt "$DEST/"
           cp android-src/NativeRadioPlugin.kt "$DEST/"
 
+          # Copy persistent keystore for permanent APK signing
+          cp android-keystore/neoradio.keystore android/app/neoradio.keystore
+
           # Deterministic MainActivity registration for NativeRadioPlugin
           cat << 'EOF' > "$DEST/MainActivity.java"
           package com.neoradio.carplayer;
@@ -59,6 +62,19 @@ jobs:
           apply plugin: 'org.jetbrains.kotlin.android'
 
           android {
+              signingConfigs {
+                  persistentSign {
+                      storeFile file('neoradio.keystore')
+                      storePassword 'neoradio123'
+                      keyAlias 'neoradio'
+                      keyPassword 'neoradio123'
+                  }
+              }
+              buildTypes {
+                  debug {
+                      signingConfig signingConfigs.persistentSign
+                  }
+              }
               kotlinOptions {
                   jvmTarget = '17'
               }
