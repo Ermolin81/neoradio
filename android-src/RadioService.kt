@@ -8,6 +8,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -19,6 +20,7 @@ import androidx.media3.common.C
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -44,8 +46,19 @@ import java.util.concurrent.Executors
 
 const val CMD_UPDATE_LIVE_METADATA = "com.neoradio.carplayer.COMMAND_UPDATE_LIVE_METADATA"
 
+data class StationData(
+    val id: String,
+    val url: String,
+    val title: String,
+    val artist: String,
+    val artwork: String? = null
+)
+
 @OptIn(UnstableApi::class)
-class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPlayer(player) {
+class LiveMetadataForwardingPlayer(
+    private val player: ExoPlayer,
+    private val service: RadioService
+) : ForwardingPlayer(player) {
     @Volatile var customTitle: String? = null
     @Volatile var customArtist: String? = null
     @Volatile var customArtworkBytes: ByteArray? = null
@@ -134,6 +147,9 @@ class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPl
         }
     }
 
+    override fun hasNextMediaItem(): Boolean = RadioService.stationCatalog.size > 1
+    override fun hasPreviousMediaItem(): Boolean = RadioService.stationCatalog.size > 1
+
     override fun seekToNext() {
         seekToNextMediaItem()
     }
@@ -143,24 +159,87 @@ class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPl
     }
 
     override fun seekToNextMediaItem() {
-        if (player.mediaItemCount <= 0) return
-        val nextIndex = (player.currentMediaItemIndex + 1) % player.mediaItemCount
-        player.seekToDefaultPosition(nextIndex)
-        player.prepare()
-        player.play()
+        service.playNextStation()
     }
 
     override fun seekToPreviousMediaItem() {
-        if (player.mediaItemCount <= 0) return
-        val prevIndex = (player.currentMediaItemIndex - 1 + player.mediaItemCount) % player.mediaItemCount
-        player.seekToDefaultPosition(prevIndex)
-        player.prepare()
-        player.play()
+        service.playPreviousStation()
     }
 }
 
 @OptIn(UnstableApi::class)
 class RadioService : MediaSessionService() {
+    companion object {
+        const val CMD_UPDATE_LIVE_METADATA = "com.neoradio.carplayer.COMMAND_UPDATE_LIVE_METADATA"
+        const val CMD_SELECT_STATION = "com.neoradio.carplayer.COMMAND_SELECT_STATION"
+
+        @Volatile var instance: RadioService? = null
+        @Volatile var currentStationIndex: Int = 0
+        val stationCatalog: MutableList<StationData> = ArrayList()
+
+        val DEFAULT_STATIONS = listOf(
+            StationData("radio_ultra", "https://nashe1.hostingradio.ru/ultra-128.mp3", "Радио ULTRA", "Alternative Rock & Nu-Metal • Moscow"),
+            StationData("radio_maximum", "https://maximum.hostingradio.ru/maximum128.mp3", "Радио MAXIMUM", "Rock, Modern Rock & Alternative • Moscow"),
+            StationData("radio_rock_suomi", "https://aud-stream-radiorock.nm-elemental.nelonenmedia.fi/playlist.m3u8", "Radio Rock Suomi", "Rock / Heavy Metal • Supla"),
+            StationData("radio_city", "https://streaming.radioplay.fi/radiocity/hml_128.mp3?direct=true", "Radio City (Finland)", "Classic Rock & Metal • Live"),
+            StationData("rock_antenne_classic_perlen", "https://stream.rockantenne.de/classic-perlen/stream/mp3", "Rock Antenne Road Perlen", "Classic Rock & Highway Hits • Road Trip"),
+            StationData("star_fm_fromhell", "https://stream.starfm.de/fromhell/mp3-192", "Star FM - From Hell", "Heavy Metal & Hard Rock • Berlin"),
+            StationData("rock_antenne_heavy_metal", "https://stream.rockantenne.de/heavy-metal/stream/mp3", "Rock Antenne Heavy Metal", "Heavy Metal & Power • Germany"),
+            StationData("ultra_dark_radio", "https://stream.laut.fm/ultradarkradio", "Ultra Dark Radio", "Darkwave & NDT • Blutengel, Mantus"),
+            StationData("on_gothic_radio", "https://0n-gothic.radionetz.de/0n-gothic.mp3", "0N Gothic Radio", "Gothic Rock & Synth-Goth • Germany"),
+            StationData("rock_antenne_gothic", "https://s6-webradio.rockantenne.de/gothic/stream/mp3", "Rock Antenne Gothic", "Gothic Rock & Dark Alternative"),
+            StationData("radio_bob_gothic", "https://streams.radiobob.de/gothic/mp3-192/streams.radiobob.de/", "Radio BOB! Gothic Rock", "Gothic Rock & Post-Punk • Germany"),
+            StationData("dark_metal_radio", "https://stream.laut.fm/dark-metal-radio", "Dark Metal-Radio", "Gothic Metal & Symphonic Dark"),
+            StationData("electrozombies", "https://stream.laut.fm/electrozombies", "ElectroZombies", "Darkwave & Gothic Synth • Germany"),
+            StationData("synthwave_radio", "https://stream.synthwaveradio.eu/listen/synthwaveradio.eu/radio.mp3", "Synthwave Radio 24/7", "Retro Synth & Cyberpunk 24/7"),
+            StationData("nightride_fm", "https://stream.nightride.fm/nightride.mp3", "Nightride FM", "Synthwave & Chillwave 320k Ultra HD"),
+            StationData("nightride_datawave", "https://stream.nightride.fm/datawave.mp3", "Datawave (Darksynth)", "Darksynth, Cyberpunk & EBM 320k"),
+            StationData("darksynth_radio", "https://stream.laut.fm/darksynthradio", "Darksynth Radio", "Raw Dark Synth & Industrial Beats"),
+            StationData("deep_one_radio", "https://stream.deep1.ru/deep1mp3", "DEEP ONE Radio", "Deep House, Atmospheric & Melodic Chill • deep1.ru")
+        )
+
+        fun createMediaItem(station: StationData, index: Int = -1): MediaItem {
+            val metaBuilder = MediaMetadata.Builder()
+                .setTitle(station.title)
+                .setDisplayTitle(station.title)
+                .setArtist(station.artist)
+
+            val extras = Bundle()
+            if (index >= 0) {
+                extras.putInt("catalogIndex", index)
+            }
+            extras.putString("stationId", station.id)
+            extras.putString("url", station.url)
+            metaBuilder.setExtras(extras)
+
+            val artwork = station.artwork
+            if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://") || artwork.startsWith("content://"))) {
+                try {
+                    metaBuilder.setArtworkUri(Uri.parse(artwork))
+                } catch (e: Exception) {}
+            }
+
+            val url = station.url
+            val isHls = url.contains(".m3u8", ignoreCase = true) || url.contains("m3u8", ignoreCase = true)
+            val isAac = url.contains(".aac", ignoreCase = true) || url.contains("aac", ignoreCase = true)
+            val isOgg = url.contains(".ogg", ignoreCase = true) || url.contains("ogg", ignoreCase = true)
+
+            val mimeType = when {
+                isHls -> MimeTypes.APPLICATION_M3U8
+                isAac -> MimeTypes.AUDIO_AAC
+                isOgg -> MimeTypes.AUDIO_OGG
+                else -> MimeTypes.AUDIO_MPEG
+            }
+
+            return MediaItem.Builder()
+                .setMediaId(station.id)
+                .setUri(url)
+                .setMimeType(mimeType)
+                .setMediaMetadata(metaBuilder.build())
+                .build()
+        }
+    }
+
     private var mediaSession: MediaSession? = null
     private lateinit var player: ExoPlayer
     private lateinit var forwardingPlayer: LiveMetadataForwardingPlayer
@@ -174,6 +253,10 @@ class RadioService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
+        if (stationCatalog.isEmpty()) {
+            stationCatalog.addAll(DEFAULT_STATIONS)
+        }
 
         // 1. Автомобильный буфер (до 45 сек в памяти, старт после 2.5 сек)
         val loadControl = DefaultLoadControl.Builder()
@@ -188,7 +271,6 @@ class RadioService : MediaSessionService() {
             .setReadTimeoutMs(15_000)
 
         val extractorsFactory = DefaultExtractorsFactory()
-            .setConstantBitrateSeekingEnabled(true)
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this, extractorsFactory)
             .setDataSourceFactory(httpDataSourceFactory)
@@ -210,7 +292,7 @@ class RadioService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true) // Пауза при отвале Bluetooth в машине
             .build()
 
-        forwardingPlayer = LiveMetadataForwardingPlayer(player)
+        forwardingPlayer = LiveMetadataForwardingPlayer(player, this)
 
         // 4. Закольцованный плейлист для аппаратных кнопок руля (Next / Prev по AVRCP)
         player.repeatMode = Player.REPEAT_MODE_ALL
@@ -223,9 +305,7 @@ class RadioService : MediaSessionService() {
             override fun onPlayerError(error: PlaybackException) {
                 Log.e("RadioService", "ExoPlayer error [${error.errorCodeName}]: ${error.message}", error)
                 if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
-                    player.seekToDefaultPosition()
-                    player.prepare()
-                    player.play()
+                    playStationAt(currentStationIndex, autoPlay = true)
                     return
                 }
 
@@ -234,10 +314,8 @@ class RadioService : MediaSessionService() {
                         shouldResumeOnNetwork = true
                     } else {
                         mainHandler.postDelayed({
-                            if (!isServiceDestroyed && player.playWhenReady && player.mediaItemCount > 0) {
-                                player.seekToDefaultPosition()
-                                player.prepare()
-                                player.play()
+                            if (!isServiceDestroyed && player.playWhenReady && stationCatalog.isNotEmpty()) {
+                                playStationAt(currentStationIndex, autoPlay = true)
                             }
                         }, 2000L)
                     }
@@ -269,7 +347,9 @@ class RadioService : MediaSessionService() {
                     mainHandler.post {
                         if (!isServiceDestroyed && shouldResumeOnNetwork) {
                             shouldResumeOnNetwork = false
-                            if (player.mediaItemCount > 0) {
+                            if (stationCatalog.isNotEmpty()) {
+                                playStationAt(currentStationIndex, autoPlay = true)
+                            } else if (player.mediaItemCount > 0) {
                                 player.seekToDefaultPosition()
                                 player.prepare()
                                 player.play()
@@ -308,6 +388,7 @@ class RadioService : MediaSessionService() {
 
                     val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
                         .add(SessionCommand(CMD_UPDATE_LIVE_METADATA, Bundle.EMPTY))
+                        .add(SessionCommand(CMD_SELECT_STATION, Bundle.EMPTY))
                         .build()
 
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
@@ -328,11 +409,53 @@ class RadioService : MediaSessionService() {
                         val artwork = args.getString("artwork")
                         handleUpdateLiveMetadata(title, artist, artwork)
                         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    } else if (customCommand.customAction == CMD_SELECT_STATION) {
+                        val index = args.getInt("index", 0)
+                        playStationAt(index, autoPlay = true)
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     }
                     return super.onCustomCommand(session, controller, customCommand, args)
                 }
             })
             .build()
+    }
+
+    fun setCatalog(stations: List<StationData>, startIndex: Int = 0) {
+        stationCatalog.clear()
+        stationCatalog.addAll(stations)
+        val safeIndex = if (startIndex in stationCatalog.indices) startIndex else 0
+        currentStationIndex = safeIndex
+    }
+
+    fun playStationAt(index: Int, autoPlay: Boolean = true) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            mainHandler.post { playStationAt(index, autoPlay) }
+            return
+        }
+        if (stationCatalog.isEmpty()) return
+        val safeIndex = ((index % stationCatalog.size) + stationCatalog.size) % stationCatalog.size
+        currentStationIndex = safeIndex
+        val station = stationCatalog[safeIndex]
+
+        forwardingPlayer.updateLiveMetadata(null, null, null)
+        val freshItem = createMediaItem(station, safeIndex)
+        player.setMediaItem(freshItem)
+        player.prepare()
+        if (autoPlay) {
+            player.play()
+        }
+    }
+
+    fun playNextStation() {
+        if (stationCatalog.isEmpty()) return
+        val nextIndex = (currentStationIndex + 1) % stationCatalog.size
+        playStationAt(nextIndex, autoPlay = true)
+    }
+
+    fun playPreviousStation() {
+        if (stationCatalog.isEmpty()) return
+        val prevIndex = (currentStationIndex - 1 + stationCatalog.size) % stationCatalog.size
+        playStationAt(prevIndex, autoPlay = true)
     }
 
     private fun handleUpdateLiveMetadata(title: String?, artist: String?, artwork: String?) {
@@ -453,6 +576,9 @@ class RadioService : MediaSessionService() {
             player.release()
             release()
             mediaSession = null
+        }
+        if (instance == this) {
+            instance = null
         }
         super.onDestroy()
     }

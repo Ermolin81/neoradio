@@ -61,31 +61,36 @@ class NativeRadioPlugin : Plugin() {
                 val isPlaying = ctrl.isPlaying
                 val playWhenReady = ctrl.playWhenReady
                 val state = ctrl.playbackState
-                val idx = ctrl.currentMediaItemIndex
-                val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
+                val currentItem = ctrl.currentMediaItem
+                val extrasIndex = currentItem?.mediaMetadata?.extras?.getInt("catalogIndex", -1) ?: -1
+                val idx = if (extrasIndex >= 0) extrasIndex else RadioService.currentStationIndex
+                val station = if (idx in RadioService.stationCatalog.indices) RadioService.stationCatalog[idx] else null
 
-                // Active playing includes buffering when user requested playback
-                val isActive = isPlaying || (playWhenReady && state == Player.STATE_BUFFERING)
+                // Active playing includes buffering and ready states when user requested playback
+                val isActive = isPlaying || (playWhenReady && (state == Player.STATE_READY || state == Player.STATE_BUFFERING))
 
                 val ret = JSObject()
                 ret.put("isPlaying", isActive)
                 ret.put("isBuffering", state == Player.STATE_BUFFERING)
                 ret.put("rawIsPlaying", isPlaying)
                 ret.put("index", idx)
-                ret.put("stationId", currentItem?.mediaId ?: "")
+                ret.put("stationId", station?.id ?: currentItem?.mediaId ?: "")
                 notifyListeners("playbackStateChanged", ret)
             }
 
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                val idx = ctrl.currentMediaItemIndex
+                val currentItem = mediaItem ?: ctrl.currentMediaItem
+                val extrasIndex = currentItem?.mediaMetadata?.extras?.getInt("catalogIndex", -1) ?: -1
+                val idx = if (extrasIndex >= 0) extrasIndex else RadioService.currentStationIndex
                 lastMediaItemIndex = idx
-                val currentItem = mediaItem ?: if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else null
-                val stationId = currentItem?.mediaId ?: ""
-                val uri = currentItem?.localConfiguration?.uri?.toString()
+                val station = if (idx in RadioService.stationCatalog.indices) RadioService.stationCatalog[idx] else null
+
+                val stationId = station?.id ?: currentItem?.mediaId ?: ""
+                val uri = station?.url ?: currentItem?.localConfiguration?.uri?.toString()
                     ?: currentItem?.requestMetadata?.mediaUri?.toString()
                     ?: ""
-                val title = currentItem?.mediaMetadata?.title?.toString() ?: ""
-                val artist = currentItem?.mediaMetadata?.artist?.toString() ?: ""
+                val title = station?.title ?: currentItem?.mediaMetadata?.title?.toString() ?: ""
+                val artist = station?.artist ?: currentItem?.mediaMetadata?.artist?.toString() ?: ""
 
                 val isLiveActive = ctrl.isPlaying || (ctrl.playWhenReady && ctrl.playbackState != Player.STATE_IDLE && ctrl.playbackState != Player.STATE_ENDED)
 
@@ -146,38 +151,8 @@ class NativeRadioPlugin : Plugin() {
         }
     }
 
-    private fun createMediaItem(stationId: String, url: String, title: String, artist: String, artwork: String?): MediaItem {
-        val metaBuilder = MediaMetadata.Builder()
-            .setTitle(title)
-            .setDisplayTitle(title)
-            .setArtist(artist)
-
-        if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://") || artwork.startsWith("content://"))) {
-            try {
-                metaBuilder.setArtworkUri(Uri.parse(artwork))
-            } catch (e: Exception) {}
-        }
-
-        val mimeType = when {
-            url.contains(".m3u8", ignoreCase = true) || url.contains("m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
-            url.contains(".aac", ignoreCase = true) || url.contains("aac", ignoreCase = true) -> MimeTypes.AUDIO_AAC
-            url.contains(".ogg", ignoreCase = true) || url.contains("ogg", ignoreCase = true) -> MimeTypes.AUDIO_OGG
-            else -> MimeTypes.AUDIO_MPEG
-        }
-
-        val liveConfig = MediaItem.LiveConfiguration.Builder()
-            .setTargetOffsetMs(12_000L)
-            .setMinOffsetMs(6_000L)
-            .setMaxOffsetMs(30_000L)
-            .build()
-
-        return MediaItem.Builder()
-            .setMediaId(stationId)
-            .setUri(url)
-            .setMimeType(mimeType)
-            .setLiveConfiguration(liveConfig)
-            .setMediaMetadata(metaBuilder.build())
-            .build()
+    private fun createMediaItem(stationId: String, url: String, title: String, artist: String, artwork: String?, index: Int = -1): MediaItem {
+        return RadioService.createMediaItem(StationData(stationId, url, title, artist, artwork), index)
     }
 
     @PluginMethod
@@ -189,7 +164,7 @@ class NativeRadioPlugin : Plugin() {
         val startIndex = call.getInt("startIndex") ?: 0
         val autoPlay = call.getBoolean("autoPlay") ?: false
 
-        val mediaItems = ArrayList<MediaItem>()
+        val catalogList = ArrayList<StationData>()
         for (i in 0 until stationsArray.length()) {
             val obj = stationsArray.getJSONObject(i)
             val url = obj.optString("url")
@@ -227,24 +202,30 @@ class NativeRadioPlugin : Plugin() {
                 null
             }
 
-            val item = createMediaItem(stationId, url, title, artist, artUri)
-            mediaItems.add(item)
+            catalogList.add(StationData(stationId, url, title, artist, artUri))
         }
 
-        if (mediaItems.isEmpty()) {
+        if (catalogList.isEmpty()) {
             return call.reject("No valid media items found in stations array")
         }
 
         withController(call) { ctrl ->
-            val safeIndex = if (startIndex in 0 until mediaItems.size) startIndex else 0
+            val safeIndex = if (startIndex in catalogList.indices) startIndex else 0
             lastMediaItemIndex = safeIndex
-            ctrl.setMediaItems(mediaItems, safeIndex, 0L)
-            ctrl.prepare()
-            if (autoPlay) {
-                ctrl.play()
+            val service = RadioService.instance
+            if (service != null) {
+                service.setCatalog(catalogList, safeIndex)
+                service.playStationAt(safeIndex, autoPlay = autoPlay)
+            } else {
+                RadioService.stationCatalog.clear()
+                RadioService.stationCatalog.addAll(catalogList)
+                RadioService.currentStationIndex = safeIndex
+                val args = Bundle().apply { putInt("index", safeIndex) }
+                ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
             }
+
             val ret = JSObject()
-            ret.put("count", mediaItems.size)
+            ret.put("count", catalogList.size)
             ret.put("startIndex", safeIndex)
             call.resolve(ret)
         }
@@ -254,21 +235,17 @@ class NativeRadioPlugin : Plugin() {
     fun selectStation(call: PluginCall) {
         val index = call.getInt("index") ?: return call.reject("Missing index")
         withController(call) { ctrl ->
-            if (index in 0 until ctrl.mediaItemCount) {
-                lastMediaItemIndex = index
-                if (ctrl.currentMediaItemIndex == index && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
-                    ctrl.play()
-                } else {
-                    ctrl.seekToDefaultPosition(index)
-                    ctrl.prepare()
-                    ctrl.play()
-                }
-                val ret = JSObject()
-                ret.put("index", index)
-                call.resolve(ret)
+            lastMediaItemIndex = index
+            val service = RadioService.instance
+            if (service != null) {
+                service.playStationAt(index, autoPlay = true)
             } else {
-                call.reject("Index out of bounds: $index (count: ${ctrl.mediaItemCount})")
+                val args = Bundle().apply { putInt("index", index) }
+                ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
             }
+            val ret = JSObject()
+            ret.put("index", index)
+            call.resolve(ret)
         }
     }
 
@@ -307,15 +284,15 @@ class NativeRadioPlugin : Plugin() {
                 return@withController
             }
 
+            val service = RadioService.instance
             var foundIndex = -1
-            for (i in 0 until ctrl.mediaItemCount) {
-                val item = ctrl.getMediaItemAt(i)
-                if (!stationId.isNullOrEmpty() && item.mediaId == stationId) {
+            for (i in RadioService.stationCatalog.indices) {
+                val s = RadioService.stationCatalog[i]
+                if (!stationId.isNullOrEmpty() && s.id == stationId) {
                     foundIndex = i
                     break
                 }
-                val itemUri = item.localConfiguration?.uri?.toString() ?: item.requestMetadata?.mediaUri?.toString()
-                if (!url.isNullOrEmpty() && itemUri == url) {
+                if (!url.isNullOrEmpty() && s.url == url) {
                     foundIndex = i
                     break
                 }
@@ -323,37 +300,24 @@ class NativeRadioPlugin : Plugin() {
 
             if (foundIndex != -1) {
                 lastMediaItemIndex = foundIndex
-                if (ctrl.currentMediaItemIndex == foundIndex && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
+                if (RadioService.currentStationIndex == foundIndex && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
                     ctrl.play()
                 } else {
-                    ctrl.seekToDefaultPosition(foundIndex)
-                    ctrl.prepare()
-                    ctrl.play()
+                    service?.playStationAt(foundIndex, autoPlay = true)
                 }
             } else if (!url.isNullOrEmpty()) {
                 val effectiveId = if (!stationId.isNullOrEmpty()) stationId else url
-                val newItem = createMediaItem(effectiveId, url, title, artist, artwork)
-                if (ctrl.mediaItemCount == 0) {
-                    ctrl.setMediaItems(listOf(newItem), 0, 0L)
-                    ctrl.prepare()
-                    ctrl.play()
-                    lastMediaItemIndex = 0
-                } else {
-                    ctrl.addMediaItem(newItem)
-                    val targetIndex = ctrl.mediaItemCount - 1
-                    if (targetIndex >= 0) {
-                        ctrl.seekToDefaultPosition(targetIndex)
-                    }
-                    ctrl.prepare()
-                    ctrl.play()
-                    lastMediaItemIndex = targetIndex
-                }
+                val newStation = StationData(effectiveId, url, title, artist, artwork)
+                RadioService.stationCatalog.add(newStation)
+                val targetIndex = RadioService.stationCatalog.size - 1
+                lastMediaItemIndex = targetIndex
+                service?.playStationAt(targetIndex, autoPlay = true)
             } else {
                 ctrl.play()
             }
 
             val ret = JSObject()
-            ret.put("index", ctrl.currentMediaItemIndex)
+            ret.put("index", RadioService.currentStationIndex)
             ret.put("isPlaying", true)
             call.resolve(ret)
         }
@@ -378,11 +342,14 @@ class NativeRadioPlugin : Plugin() {
     @PluginMethod
     fun next(call: PluginCall) {
         withController(call) { ctrl ->
-            ctrl.seekToNextMediaItem()
-            ctrl.prepare()
-            ctrl.play()
+            val service = RadioService.instance
+            if (service != null) {
+                service.playNextStation()
+            } else {
+                ctrl.seekToNextMediaItem()
+            }
             val ret = JSObject()
-            ret.put("index", ctrl.currentMediaItemIndex)
+            ret.put("index", RadioService.currentStationIndex)
             call.resolve(ret)
         }
     }
@@ -390,11 +357,14 @@ class NativeRadioPlugin : Plugin() {
     @PluginMethod
     fun prev(call: PluginCall) {
         withController(call) { ctrl ->
-            ctrl.seekToPreviousMediaItem()
-            ctrl.prepare()
-            ctrl.play()
+            val service = RadioService.instance
+            if (service != null) {
+                service.playPreviousStation()
+            } else {
+                ctrl.seekToPreviousMediaItem()
+            }
             val ret = JSObject()
-            ret.put("index", ctrl.currentMediaItemIndex)
+            ret.put("index", RadioService.currentStationIndex)
             call.resolve(ret)
         }
     }
@@ -403,21 +373,24 @@ class NativeRadioPlugin : Plugin() {
     fun getCurrentState(call: PluginCall) {
         withController(call) { ctrl ->
             val ret = JSObject()
-            val idx = ctrl.currentMediaItemIndex
-            val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
-            val isPlaying = ctrl.isPlaying || (ctrl.playWhenReady && ctrl.playbackState == Player.STATE_BUFFERING)
+            val currentItem = ctrl.currentMediaItem
+            val extrasIndex = currentItem?.mediaMetadata?.extras?.getInt("catalogIndex", -1) ?: -1
+            val idx = if (extrasIndex >= 0) extrasIndex else RadioService.currentStationIndex
+            val station = if (idx in RadioService.stationCatalog.indices) RadioService.stationCatalog[idx] else null
+            val state = ctrl.playbackState
+            val isPlaying = ctrl.isPlaying || (ctrl.playWhenReady && (state == Player.STATE_READY || state == Player.STATE_BUFFERING))
             ret.put("isPlaying", isPlaying)
-            ret.put("isBuffering", ctrl.playbackState == Player.STATE_BUFFERING)
+            ret.put("isBuffering", state == Player.STATE_BUFFERING)
             ret.put("rawIsPlaying", ctrl.isPlaying)
             ret.put("index", idx)
-            ret.put("stationId", currentItem?.mediaId ?: "")
-            val uri = currentItem?.localConfiguration?.uri?.toString()
+            ret.put("stationId", station?.id ?: currentItem?.mediaId ?: "")
+            val uri = station?.url ?: currentItem?.localConfiguration?.uri?.toString()
                 ?: currentItem?.requestMetadata?.mediaUri?.toString()
                 ?: ""
             ret.put("url", uri)
-            ret.put("title", currentItem?.mediaMetadata?.title?.toString() ?: "")
-            ret.put("artist", currentItem?.mediaMetadata?.artist?.toString() ?: "")
-            ret.put("mediaItemCount", ctrl.mediaItemCount)
+            ret.put("title", station?.title ?: currentItem?.mediaMetadata?.title?.toString() ?: "")
+            ret.put("artist", station?.artist ?: currentItem?.mediaMetadata?.artist?.toString() ?: "")
+            ret.put("mediaItemCount", RadioService.stationCatalog.size)
             call.resolve(ret)
         }
     }

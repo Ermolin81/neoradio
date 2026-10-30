@@ -1399,24 +1399,6 @@
 
       // Trigger track metadata query for new station immediately
       pollTrackMetadata();
-
-      // Update UI on-air status based on whether native player is playing
-      const playing = (typeof isNowPlaying === 'boolean') ? isNowPlaying : isPlaying;
-      if (playing) {
-        isPlaying = true;
-        showPlayIcon(false);
-        document.body.classList.add('is-playing');
-        document.getElementById('equalizer').classList.add('playing');
-        setUiStatus('● В ЭФИРЕ', true);
-        startTrackInfoLoop();
-      } else {
-        isPlaying = false;
-        showPlayIcon(true);
-        document.body.classList.remove('is-playing');
-        document.getElementById('equalizer').classList.remove('playing');
-        setUiStatus('ПАУЗА', false);
-        stopTrackInfoLoop();
-      }
     }
 
     function onNativePlaybackStateChanged(playing, isBuffering) {
