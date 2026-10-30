@@ -2,17 +2,24 @@ package com.neoradio.carplayer
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
+import android.util.LruCache
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultHttpDataSource
@@ -24,20 +31,93 @@ import androidx.media3.exoplayer.upstream.LoadErrorHandlingPolicy
 import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
+import java.io.ByteArrayOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 
-object MediaButtonBus {
-    var onNext: (() -> Unit)? = null
-    var onPrev: (() -> Unit)? = null
+const val CMD_UPDATE_LIVE_METADATA = "com.neoradio.carplayer.COMMAND_UPDATE_LIVE_METADATA"
+
+@OptIn(UnstableApi::class)
+class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPlayer(player) {
+    @Volatile var customTitle: String? = null
+    @Volatile var customArtist: String? = null
+    @Volatile var customArtworkBytes: ByteArray? = null
+
+    private val listeners = CopyOnWriteArraySet<Player.Listener>()
+
+    override fun addListener(listener: Player.Listener) {
+        listeners.add(listener)
+        super.addListener(listener)
+    }
+
+    override fun removeListener(listener: Player.Listener) {
+        listeners.remove(listener)
+        super.removeListener(listener)
+    }
+
+    fun updateLiveMetadata(title: String?, artist: String?, artworkBytes: ByteArray?) {
+        this.customTitle = title
+        this.customArtist = artist
+        this.customArtworkBytes = artworkBytes
+        val currentMeta = getMediaMetadata()
+        for (listener in listeners) {
+            try {
+                listener.onMediaMetadataChanged(currentMeta)
+            } catch (e: Exception) {
+                Log.w("RadioService", "Error notifying onMediaMetadataChanged", e)
+            }
+        }
+    }
+
+    override fun getMediaMetadata(): MediaMetadata {
+        val base = super.getMediaMetadata()
+        val builder = base.buildUpon()
+        if (!customTitle.isNullOrEmpty()) {
+            builder.setTitle(customTitle)
+            builder.setDisplayTitle(customTitle)
+        }
+        if (!customArtist.isNullOrEmpty()) {
+            builder.setArtist(customArtist)
+        }
+        if (customArtworkBytes != null) {
+            builder.setArtworkData(customArtworkBytes, MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+        }
+        return builder.build()
+    }
+
+    override fun getDuration(): Long = C.TIME_UNSET
+    override fun getContentDuration(): Long = C.TIME_UNSET
+    override fun getCurrentPosition(): Long = 0L
+    override fun getContentPosition(): Long = 0L
+    override fun isCurrentMediaItemLive(): Boolean = true
+    override fun isCurrentMediaItemDynamic(): Boolean = true
+
+    override fun seekToNext() {
+        seekToNextMediaItem()
+    }
+
+    override fun seekToPrevious() {
+        seekToPreviousMediaItem()
+    }
 }
 
 @OptIn(UnstableApi::class)
 class RadioService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
     private lateinit var player: ExoPlayer
+    private lateinit var forwardingPlayer: LiveMetadataForwardingPlayer
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var shouldResumeOnNetwork = false
+    private val artworkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val artworkCache = object : LruCache<String, ByteArray>(25) {}
 
     override fun onCreate() {
         super.onCreate()
@@ -77,18 +157,34 @@ class RadioService : MediaSessionService() {
             .setHandleAudioBecomingNoisy(true) // Пауза при отвале Bluetooth в машине
             .build()
 
+        forwardingPlayer = LiveMetadataForwardingPlayer(player)
+
         // 4. Закольцованный плейлист для аппаратных кнопок руля (Next / Prev по AVRCP)
         player.repeatMode = Player.REPEAT_MODE_ALL
 
         player.addListener(object : Player.Listener {
-            override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-                android.util.Log.e("RadioService", "ExoPlayer error [${error.errorCodeName}]: ${error.message}", error)
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                forwardingPlayer.customTitle = null
+                forwardingPlayer.customArtist = null
+                forwardingPlayer.customArtworkBytes = null
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                Log.e("RadioService", "ExoPlayer error [${error.errorCodeName}]: ${error.message}", error)
+                if (error.errorCode == PlaybackException.ERROR_CODE_BEHIND_LIVE_WINDOW) {
+                    player.seekToDefaultPosition()
+                    player.prepare()
+                    player.play()
+                    return
+                }
+
                 if (player.playWhenReady) {
                     if (!isNetworkConnected()) {
                         shouldResumeOnNetwork = true
                     } else {
                         Handler(Looper.getMainLooper()).postDelayed({
                             if (player.playWhenReady && player.mediaItemCount > 0) {
+                                player.seekToDefaultPosition()
                                 player.prepare()
                                 player.play()
                             }
@@ -146,7 +242,7 @@ class RadioService : MediaSessionService() {
             e.printStackTrace()
         }
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaSession.Builder(this, forwardingPlayer)
             .setCallback(object : MediaSession.Callback {
                 override fun onConnect(
                     session: MediaSession,
@@ -158,28 +254,99 @@ class RadioService : MediaSessionService() {
                         .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
                         .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
                         .build()
+
+                    val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                        .add(SessionCommand(CMD_UPDATE_LIVE_METADATA, Bundle.EMPTY))
+                        .build()
+
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailablePlayerCommands(playerCommands)
+                        .setAvailableSessionCommands(sessionCommands)
                         .build()
                 }
 
-                override fun onPlayerCommandRequest(
+                override fun onCustomCommand(
                     session: MediaSession,
                     controller: MediaSession.ControllerInfo,
-                    playerCommand: Int
-                ): Int {
-                    if (playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS || playerCommand == Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM) {
-                        MediaButtonBus.onPrev?.invoke()
-                        return SessionResult.RESULT_INFO_SKIPPED
+                    customCommand: SessionCommand,
+                    args: Bundle
+                ): ListenableFuture<SessionResult> {
+                    if (customCommand.customAction == CMD_UPDATE_LIVE_METADATA) {
+                        val title = args.getString("title")
+                        val artist = args.getString("artist")
+                        val artwork = args.getString("artwork")
+                        handleUpdateLiveMetadata(title, artist, artwork)
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     }
-                    if (playerCommand == Player.COMMAND_SEEK_TO_NEXT || playerCommand == Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM) {
-                        MediaButtonBus.onNext?.invoke()
-                        return SessionResult.RESULT_INFO_SKIPPED
-                    }
-                    return super.onPlayerCommandRequest(session, controller, playerCommand)
+                    return super.onCustomCommand(session, controller, customCommand, args)
                 }
             })
             .build()
+    }
+
+    private fun handleUpdateLiveMetadata(title: String?, artist: String?, artwork: String?) {
+        if (artwork.isNullOrEmpty()) {
+            forwardingPlayer.updateLiveMetadata(title, artist, null)
+            return
+        }
+
+        val cached = artworkCache.get(artwork)
+        if (cached != null) {
+            forwardingPlayer.updateLiveMetadata(title, artist, cached)
+            return
+        }
+
+        forwardingPlayer.updateLiveMetadata(title, artist, null)
+        val targetTitle = title
+        val targetArtist = artist
+        val targetArtwork = artwork
+
+        artworkExecutor.execute {
+            val bytes = downloadAndCompressArtwork(targetArtwork)
+            if (bytes != null) {
+                artworkCache.put(targetArtwork, bytes)
+                Handler(Looper.getMainLooper()).post {
+                    if (forwardingPlayer.customTitle == targetTitle && forwardingPlayer.customArtist == targetArtist) {
+                        forwardingPlayer.updateLiveMetadata(targetTitle, targetArtist, bytes)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun downloadAndCompressArtwork(urlString: String): ByteArray? {
+        var connection: HttpURLConnection? = null
+        return try {
+            val url = URL(urlString)
+            connection = url.openConnection() as HttpURLConnection
+            connection.connectTimeout = 8_000
+            connection.readTimeout = 8_000
+            connection.instanceFollowRedirects = true
+            connection.doInput = true
+            connection.connect()
+            if (connection.responseCode in 200..299) {
+                connection.inputStream.use { input ->
+                    val originalBitmap = BitmapFactory.decodeStream(input) ?: return null
+                    val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 300, 300, true)
+                    val out = ByteArrayOutputStream()
+                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                    if (scaledBitmap != originalBitmap) {
+                        originalBitmap.recycle()
+                    }
+                    scaledBitmap.recycle()
+                    out.toByteArray()
+                }
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            Log.w("RadioService", "Artwork download/compress error for $urlString: ${e.message}")
+            null
+        } finally {
+            try {
+                connection?.disconnect()
+            } catch (e: Exception) {}
+        }
     }
 
     private fun isNetworkConnected(): Boolean {
@@ -204,6 +371,11 @@ class RadioService : MediaSessionService() {
             e.printStackTrace()
         }
         networkCallback = null
+        try {
+            artworkExecutor.shutdownNow()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         mediaSession?.run {
             player.release()
             release()

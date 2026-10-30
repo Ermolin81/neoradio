@@ -1347,6 +1347,18 @@
       nativeRadioInitialized = true;
       const nr = window.Capacitor.Plugins.NativeRadio;
 
+      // Two-way synchronization with native ExoPlayer engine
+      nr.addListener('stationChanged', (event) => {
+        if (event && typeof event.index === 'number') {
+          onNativeStationChanged(event.index, event.isPlaying);
+        }
+      });
+      nr.addListener('playbackStateChanged', (event) => {
+        if (event && typeof event.isPlaying === 'boolean') {
+          onNativePlaybackStateChanged(event.isPlaying);
+        }
+      });
+
       // Аппаратные кнопки руля (Next / Prev) переключают станции через наш родной JS-список
       nr.addListener('nextStation', () => {
         playNextStation();
@@ -1354,6 +1366,8 @@
       nr.addListener('prevStation', () => {
         playPrevStation();
       });
+
+      syncPlaylistToNative(currentStationIndex >= 0 ? currentStationIndex : 0, false);
     }
 
     function syncPlaylistToNative(startIndex = 0, autoPlay = false) {
@@ -1361,11 +1375,13 @@
       if (!stations || stations.length === 0) return;
 
       const playlist = stations.map(s => ({
+        id: s.id || s.url,
         url: s.url,
         title: s.name,
         name: s.name,
         artist: s.genre || 'NeoRadio Live',
-        genre: s.genre || 'NeoRadio Live'
+        genre: s.genre || 'NeoRadio Live',
+        artwork: s.art || ''
       }));
 
       window.Capacitor.Plugins.NativeRadio.setPlaylist({
@@ -2202,9 +2218,12 @@
       if (isNativeAndroid) {
         if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.NativeRadio) {
           window.Capacitor.Plugins.NativeRadio.play({
+            stationId: s.id || '',
+            id: s.id || '',
             url: s.url,
             title: s.name,
             artist: s.genre || 'NeoRadio Live',
+            artwork: s.art || '',
             art: s.art || ''
           }).catch(err => console.warn('NativeRadio play error:', err));
         }

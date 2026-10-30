@@ -1,14 +1,18 @@
 package com.neoradio.carplayer
 
 import android.content.ComponentName
+import android.net.Uri
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import androidx.annotation.OptIn
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.MimeTypes
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
+import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionToken
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
@@ -21,6 +25,10 @@ import com.google.common.util.concurrent.MoreExecutors
 @OptIn(UnstableApi::class)
 @CapacitorPlugin(name = "NativeRadio")
 class NativeRadioPlugin : Plugin() {
+    companion object {
+        const val CMD_UPDATE_LIVE_METADATA = "com.neoradio.carplayer.COMMAND_UPDATE_LIVE_METADATA"
+    }
+
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
     private var listenerAttached = false
@@ -33,22 +41,15 @@ class NativeRadioPlugin : Plugin() {
             try {
                 val ctrl = controllerFuture?.get()
                 controller = ctrl
+                if (ctrl != null) {
+                    Handler(Looper.getMainLooper()).post {
+                        attachPlayerListener(ctrl)
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
         }, MoreExecutors.directExecutor())
-
-        // Аппаратные кнопки руля (Next / Prev через Bluetooth AVRCP)
-        MediaButtonBus.onNext = {
-            activity?.runOnUiThread {
-                notifyListeners("nextStation", JSObject())
-            }
-        }
-        MediaButtonBus.onPrev = {
-            activity?.runOnUiThread {
-                notifyListeners("prevStation", JSObject())
-            }
-        }
     }
 
     private fun attachPlayerListener(ctrl: MediaController) {
@@ -58,19 +59,33 @@ class NativeRadioPlugin : Plugin() {
         ctrl.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val idx = ctrl.currentMediaItemIndex
-                if (idx != lastMediaItemIndex) {
-                    lastMediaItemIndex = idx
-                    val ret = JSObject()
-                    ret.put("index", idx)
-                    ret.put("reason", reason)
-                    ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
-                    notifyListeners("stationChanged", ret)
-                }
+                lastMediaItemIndex = idx
+                val currentItem = mediaItem ?: if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else null
+                val stationId = currentItem?.mediaId ?: ""
+                val uri = currentItem?.localConfiguration?.uri?.toString()
+                    ?: currentItem?.requestMetadata?.mediaUri?.toString()
+                    ?: ""
+                val title = currentItem?.mediaMetadata?.title?.toString() ?: ""
+                val artist = currentItem?.mediaMetadata?.artist?.toString() ?: ""
+
+                val ret = JSObject()
+                ret.put("index", idx)
+                ret.put("stationId", stationId)
+                ret.put("url", uri)
+                ret.put("title", title)
+                ret.put("artist", artist)
+                ret.put("reason", reason)
+                ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
+                notifyListeners("stationChanged", ret)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 val ret = JSObject()
+                val idx = ctrl.currentMediaItemIndex
+                val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
                 ret.put("isPlaying", isPlaying)
+                ret.put("index", idx)
+                ret.put("stationId", currentItem?.mediaId ?: "")
                 notifyListeners("playbackStateChanged", ret)
             }
         })
@@ -108,27 +123,36 @@ class NativeRadioPlugin : Plugin() {
         }
     }
 
-    private fun createMediaItem(url: String, title: String, artist: String, artwork: String?): MediaItem {
+    private fun createMediaItem(stationId: String, url: String, title: String, artist: String, artwork: String?): MediaItem {
         val metaBuilder = MediaMetadata.Builder()
             .setTitle(title)
+            .setDisplayTitle(title)
             .setArtist(artist)
 
         if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://") || artwork.startsWith("content://"))) {
             try {
-                metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
+                metaBuilder.setArtworkUri(Uri.parse(artwork))
             } catch (e: Exception) {}
         }
 
         val mimeType = when {
-            url.contains(".m3u8") || url.contains("m3u8") -> androidx.media3.common.MimeTypes.APPLICATION_M3U8
-            url.contains(".aac") || url.contains("aac") -> androidx.media3.common.MimeTypes.AUDIO_AAC
-            url.contains(".ogg") || url.contains("ogg") -> androidx.media3.common.MimeTypes.AUDIO_OGG
-            else -> androidx.media3.common.MimeTypes.AUDIO_MPEG
+            url.contains(".m3u8", ignoreCase = true) || url.contains("m3u8", ignoreCase = true) -> MimeTypes.APPLICATION_M3U8
+            url.contains(".aac", ignoreCase = true) || url.contains("aac", ignoreCase = true) -> MimeTypes.AUDIO_AAC
+            url.contains(".ogg", ignoreCase = true) || url.contains("ogg", ignoreCase = true) -> MimeTypes.AUDIO_OGG
+            else -> MimeTypes.AUDIO_MPEG
         }
 
+        val liveConfig = MediaItem.LiveConfiguration.Builder()
+            .setTargetOffsetMs(12_000L)
+            .setMinOffsetMs(6_000L)
+            .setMaxOffsetMs(30_000L)
+            .build()
+
         return MediaItem.Builder()
+            .setMediaId(stationId)
             .setUri(url)
             .setMimeType(mimeType)
+            .setLiveConfiguration(liveConfig)
             .setMediaMetadata(metaBuilder.build())
             .build()
     }
@@ -147,6 +171,14 @@ class NativeRadioPlugin : Plugin() {
             val obj = stationsArray.getJSONObject(i)
             val url = obj.optString("url")
             if (url.isNullOrEmpty()) continue
+
+            val stationId = if (obj.has("id") && obj.getString("id").isNotEmpty()) {
+                obj.getString("id")
+            } else if (obj.has("stationId") && obj.getString("stationId").isNotEmpty()) {
+                obj.getString("stationId")
+            } else {
+                url
+            }
 
             val title = if (obj.has("title") && obj.getString("title").isNotEmpty()) {
                 obj.getString("title")
@@ -172,7 +204,7 @@ class NativeRadioPlugin : Plugin() {
                 null
             }
 
-            val item = createMediaItem(url, title, artist, artUri)
+            val item = createMediaItem(stationId, url, title, artist, artUri)
             mediaItems.add(item)
         }
 
@@ -181,14 +213,17 @@ class NativeRadioPlugin : Plugin() {
         }
 
         withController(call) { ctrl ->
-            val validIndex = if (startIndex in 0 until mediaItems.size) startIndex else 0
-            lastMediaItemIndex = validIndex
-            ctrl.setMediaItems(mediaItems, validIndex, 0L)
+            val safeIndex = if (startIndex in 0 until mediaItems.size) startIndex else 0
+            lastMediaItemIndex = safeIndex
+            ctrl.setMediaItems(mediaItems, safeIndex, 0L)
             ctrl.prepare()
             if (autoPlay) {
                 ctrl.play()
             }
-            call.resolve()
+            val ret = JSObject()
+            ret.put("count", mediaItems.size)
+            ret.put("startIndex", safeIndex)
+            call.resolve(ret)
         }
     }
 
@@ -201,7 +236,9 @@ class NativeRadioPlugin : Plugin() {
                 ctrl.seekToDefaultPosition(index)
                 ctrl.prepare()
                 ctrl.play()
-                call.resolve()
+                val ret = JSObject()
+                ret.put("index", index)
+                call.resolve(ret)
             } else {
                 call.reject("Index out of bounds: $index (count: ${ctrl.mediaItemCount})")
             }
@@ -215,44 +252,70 @@ class NativeRadioPlugin : Plugin() {
         val artwork = call.getString("artwork") ?: call.getString("art")
 
         withController(call) { ctrl ->
-            val currentItem = ctrl.currentMediaItem
-            if (currentItem != null) {
-                val metaBuilder = currentItem.mediaMetadata.buildUpon()
-                if (!title.isNullOrEmpty()) metaBuilder.setTitle(title)
-                if (!artist.isNullOrEmpty()) metaBuilder.setArtist(artist)
-                if (!artwork.isNullOrEmpty() && (artwork.startsWith("http://") || artwork.startsWith("https://"))) {
-                    try {
-                        metaBuilder.setArtworkUri(android.net.Uri.parse(artwork))
-                    } catch (e: Exception) {}
-                } else if (artwork != null && artwork.isEmpty()) {
-                    metaBuilder.setArtworkUri(null)
-                }
-                val updatedItem = currentItem.buildUpon()
-                    .setMediaMetadata(metaBuilder.build())
-                    .build()
-                ctrl.replaceMediaItem(ctrl.currentMediaItemIndex, updatedItem)
+            val args = Bundle().apply {
+                putString("title", title)
+                putString("artist", artist)
+                putString("artwork", artwork)
             }
+            val command = SessionCommand(CMD_UPDATE_LIVE_METADATA, Bundle.EMPTY)
+            ctrl.sendCustomCommand(command, args)
             call.resolve()
         }
     }
 
     @PluginMethod
     fun play(call: PluginCall) {
+        val stationId = call.getString("stationId") ?: call.getString("id")
         val url = call.getString("url")
         val title = call.getString("title") ?: "Radio Stream"
         val artist = call.getString("artist") ?: "NeoRadio Live"
         val artwork = call.getString("artwork") ?: call.getString("art")
 
         withController(call) { ctrl ->
-            if (url != null) {
-                val item = createMediaItem(url, title, artist, artwork)
-                ctrl.setMediaItem(item)
+            if (stationId.isNullOrEmpty() && url.isNullOrEmpty()) {
+                ctrl.play()
+                val ret = JSObject()
+                ret.put("resumed", true)
+                call.resolve(ret)
+                return@withController
+            }
+
+            var foundIndex = -1
+            for (i in 0 until ctrl.mediaItemCount) {
+                val item = ctrl.getMediaItemAt(i)
+                if (!stationId.isNullOrEmpty() && item.mediaId == stationId) {
+                    foundIndex = i
+                    break
+                }
+                val itemUri = item.localConfiguration?.uri?.toString() ?: item.requestMetadata?.mediaUri?.toString()
+                if (!url.isNullOrEmpty() && itemUri == url) {
+                    foundIndex = i
+                    break
+                }
+            }
+
+            if (foundIndex != -1) {
+                lastMediaItemIndex = foundIndex
+                ctrl.seekToDefaultPosition(foundIndex)
+                ctrl.prepare()
+                ctrl.play()
+            } else if (!url.isNullOrEmpty()) {
+                val effectiveId = stationId ?: url
+                val newItem = createMediaItem(effectiveId, url, title, artist, artwork)
+                ctrl.addMediaItem(newItem)
+                val newIndex = ctrl.mediaItemCount - 1
+                lastMediaItemIndex = newIndex
+                ctrl.seekToDefaultPosition(newIndex)
                 ctrl.prepare()
                 ctrl.play()
             } else {
                 ctrl.play()
             }
-            call.resolve()
+
+            val ret = JSObject()
+            ret.put("index", ctrl.currentMediaItemIndex)
+            ret.put("isPlaying", true)
+            call.resolve(ret)
         }
     }
 
@@ -269,6 +332,50 @@ class NativeRadioPlugin : Plugin() {
         withController(call) { ctrl ->
             ctrl.stop()
             call.resolve()
+        }
+    }
+
+    @PluginMethod
+    fun next(call: PluginCall) {
+        withController(call) { ctrl ->
+            ctrl.seekToNextMediaItem()
+            ctrl.prepare()
+            ctrl.play()
+            val ret = JSObject()
+            ret.put("index", ctrl.currentMediaItemIndex)
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun prev(call: PluginCall) {
+        withController(call) { ctrl ->
+            ctrl.seekToPreviousMediaItem()
+            ctrl.prepare()
+            ctrl.play()
+            val ret = JSObject()
+            ret.put("index", ctrl.currentMediaItemIndex)
+            call.resolve(ret)
+        }
+    }
+
+    @PluginMethod
+    fun getCurrentState(call: PluginCall) {
+        withController(call) { ctrl ->
+            val ret = JSObject()
+            val idx = ctrl.currentMediaItemIndex
+            val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
+            ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
+            ret.put("index", idx)
+            ret.put("stationId", currentItem?.mediaId ?: "")
+            val uri = currentItem?.localConfiguration?.uri?.toString()
+                ?: currentItem?.requestMetadata?.mediaUri?.toString()
+                ?: ""
+            ret.put("url", uri)
+            ret.put("title", currentItem?.mediaMetadata?.title?.toString() ?: "")
+            ret.put("artist", currentItem?.mediaMetadata?.artist?.toString() ?: "")
+            ret.put("mediaItemCount", ctrl.mediaItemCount)
+            call.resolve(ret)
         }
     }
 
