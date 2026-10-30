@@ -150,6 +150,36 @@ class LiveMetadataForwardingPlayer(
     override fun hasNextMediaItem(): Boolean = RadioService.stationCatalog.size > 1
     override fun hasPreviousMediaItem(): Boolean = RadioService.stationCatalog.size > 1
 
+    override fun play() {
+        if (player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+            player.prepare()
+        }
+        super.play()
+    }
+
+    override fun setPlayWhenReady(playWhenReady: Boolean) {
+        if (playWhenReady && player.playbackState == Player.STATE_IDLE && player.mediaItemCount > 0) {
+            player.prepare()
+        }
+        super.setPlayWhenReady(playWhenReady)
+    }
+
+    override fun seekToDefaultPosition(mediaItemIndex: Int) {
+        if (RadioService.stationCatalog.isNotEmpty()) {
+            service.playStationAt(mediaItemIndex, autoPlay = true)
+        } else {
+            super.seekToDefaultPosition(mediaItemIndex)
+        }
+    }
+
+    override fun seekTo(mediaItemIndex: Int, positionMs: Long) {
+        if (RadioService.stationCatalog.isNotEmpty()) {
+            service.playStationAt(mediaItemIndex, autoPlay = true)
+        } else {
+            super.seekTo(mediaItemIndex, positionMs)
+        }
+    }
+
     override fun seekToNext() {
         seekToNextMediaItem()
     }
@@ -183,7 +213,7 @@ class RadioService : MediaSessionService() {
             StationData("radio_rock_suomi", "https://aud-stream-radiorock.nm-elemental.nelonenmedia.fi/playlist.m3u8", "Radio Rock Suomi", "Rock / Heavy Metal • Supla"),
             StationData("radio_city", "https://streaming.radioplay.fi/radiocity/hml_128.mp3?direct=true", "Radio City (Finland)", "Classic Rock & Metal • Live"),
             StationData("rock_antenne_classic_perlen", "https://stream.rockantenne.de/classic-perlen/stream/mp3", "Rock Antenne Road Perlen", "Classic Rock & Highway Hits • Road Trip"),
-            StationData("star_fm_fromhell", "https://stream.starfm.de/fromhell/mp3-192", "Star FM - From Hell", "Heavy Metal & Hard Rock • Berlin"),
+            StationData("star_fm_from_hell", "https://stream.starfm.de/fromhell/mp3-192", "Star FM - From Hell", "Heavy Metal & Hard Rock • Berlin"),
             StationData("rock_antenne_heavy_metal", "https://stream.rockantenne.de/heavy-metal/stream/mp3", "Rock Antenne Heavy Metal", "Heavy Metal & Power • Germany"),
             StationData("ultra_dark_radio", "https://stream.laut.fm/ultradarkradio", "Ultra Dark Radio", "Darkwave & NDT • Blutengel, Mantus"),
             StationData("on_gothic_radio", "https://0n-gothic.radionetz.de/0n-gothic.mp3", "0N Gothic Radio", "Gothic Rock & Synth-Goth • Germany"),
@@ -411,7 +441,8 @@ class RadioService : MediaSessionService() {
                         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     } else if (customCommand.customAction == CMD_SELECT_STATION) {
                         val index = args.getInt("index", 0)
-                        playStationAt(index, autoPlay = true)
+                        val autoPlay = args.getBoolean("autoPlay", true)
+                        playStationAt(index, autoPlay = autoPlay)
                         return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
                     }
                     return super.onCustomCommand(session, controller, customCommand, args)
@@ -440,8 +471,8 @@ class RadioService : MediaSessionService() {
         forwardingPlayer.updateLiveMetadata(null, null, null)
         val freshItem = createMediaItem(station, safeIndex)
         player.setMediaItem(freshItem)
-        player.prepare()
         if (autoPlay) {
+            player.prepare()
             player.play()
         }
     }

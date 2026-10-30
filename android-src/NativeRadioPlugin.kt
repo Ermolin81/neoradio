@@ -220,7 +220,10 @@ class NativeRadioPlugin : Plugin() {
                 RadioService.stationCatalog.clear()
                 RadioService.stationCatalog.addAll(catalogList)
                 RadioService.currentStationIndex = safeIndex
-                val args = Bundle().apply { putInt("index", safeIndex) }
+                val args = Bundle().apply {
+                    putInt("index", safeIndex)
+                    putBoolean("autoPlay", autoPlay)
+                }
                 ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
             }
 
@@ -240,7 +243,10 @@ class NativeRadioPlugin : Plugin() {
             if (service != null) {
                 service.playStationAt(index, autoPlay = true)
             } else {
-                val args = Bundle().apply { putInt("index", index) }
+                val args = Bundle().apply {
+                    putInt("index", index)
+                    putBoolean("autoPlay", true)
+                }
                 ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
             }
             val ret = JSObject()
@@ -277,7 +283,13 @@ class NativeRadioPlugin : Plugin() {
 
         withController(call) { ctrl ->
             if (stationId.isNullOrEmpty() && url.isNullOrEmpty()) {
-                ctrl.play()
+                val service = RadioService.instance
+                if (service != null && ctrl.playbackState == Player.STATE_IDLE) {
+                    service.playStationAt(RadioService.currentStationIndex, autoPlay = true)
+                } else {
+                    ctrl.prepare()
+                    ctrl.play()
+                }
                 val ret = JSObject()
                 ret.put("resumed", true)
                 call.resolve(ret)
@@ -303,7 +315,15 @@ class NativeRadioPlugin : Plugin() {
                 if (RadioService.currentStationIndex == foundIndex && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
                     ctrl.play()
                 } else {
-                    service?.playStationAt(foundIndex, autoPlay = true)
+                    if (service != null) {
+                        service.playStationAt(foundIndex, autoPlay = true)
+                    } else {
+                        val args = Bundle().apply {
+                            putInt("index", foundIndex)
+                            putBoolean("autoPlay", true)
+                        }
+                        ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
+                    }
                 }
             } else if (!url.isNullOrEmpty()) {
                 val effectiveId = if (!stationId.isNullOrEmpty()) stationId else url
@@ -311,7 +331,15 @@ class NativeRadioPlugin : Plugin() {
                 RadioService.stationCatalog.add(newStation)
                 val targetIndex = RadioService.stationCatalog.size - 1
                 lastMediaItemIndex = targetIndex
-                service?.playStationAt(targetIndex, autoPlay = true)
+                if (service != null) {
+                    service.playStationAt(targetIndex, autoPlay = true)
+                } else {
+                    val args = Bundle().apply {
+                        putInt("index", targetIndex)
+                        putBoolean("autoPlay", true)
+                    }
+                    ctrl.sendCustomCommand(SessionCommand(RadioService.CMD_SELECT_STATION, Bundle.EMPTY), args)
+                }
             } else {
                 ctrl.play()
             }
