@@ -1355,16 +1355,8 @@
       });
       nr.addListener('playbackStateChanged', (event) => {
         if (event && typeof event.isPlaying === 'boolean') {
-          onNativePlaybackStateChanged(event.isPlaying);
+          onNativePlaybackStateChanged(event.isPlaying, !!event.isBuffering);
         }
-      });
-
-      // Аппаратные кнопки руля (Next / Prev) переключают станции через наш родной JS-список
-      nr.addListener('nextStation', () => {
-        playNextStation();
-      });
-      nr.addListener('prevStation', () => {
-        playPrevStation();
       });
 
       syncPlaylistToNative(currentStationIndex >= 0 ? currentStationIndex : 0, false);
@@ -1427,13 +1419,17 @@
       }
     }
 
-    function onNativePlaybackStateChanged(playing) {
+    function onNativePlaybackStateChanged(playing, isBuffering) {
       isPlaying = playing;
       if (playing) {
         showPlayIcon(false);
         document.body.classList.add('is-playing');
         document.getElementById('equalizer').classList.add('playing');
-        setUiStatus('● В ЭФИРЕ', true);
+        if (isBuffering) {
+          setUiStatus('ПОДКЛЮЧЕНИЕ...', false);
+        } else {
+          setUiStatus('● В ЭФИРЕ', true);
+        }
         startTrackInfoLoop();
       } else {
         showPlayIcon(true);

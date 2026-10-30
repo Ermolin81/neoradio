@@ -57,6 +57,25 @@ class NativeRadioPlugin : Plugin() {
         listenerAttached = true
         lastMediaItemIndex = ctrl.currentMediaItemIndex
         ctrl.addListener(object : Player.Listener {
+            private fun dispatchPlaybackState() {
+                val isPlaying = ctrl.isPlaying
+                val playWhenReady = ctrl.playWhenReady
+                val state = ctrl.playbackState
+                val idx = ctrl.currentMediaItemIndex
+                val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
+
+                // Active playing includes buffering when user requested playback
+                val isActive = isPlaying || (playWhenReady && state == Player.STATE_BUFFERING)
+
+                val ret = JSObject()
+                ret.put("isPlaying", isActive)
+                ret.put("isBuffering", state == Player.STATE_BUFFERING)
+                ret.put("rawIsPlaying", isPlaying)
+                ret.put("index", idx)
+                ret.put("stationId", currentItem?.mediaId ?: "")
+                notifyListeners("playbackStateChanged", ret)
+            }
+
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
                 val idx = ctrl.currentMediaItemIndex
                 lastMediaItemIndex = idx
@@ -68,6 +87,8 @@ class NativeRadioPlugin : Plugin() {
                 val title = currentItem?.mediaMetadata?.title?.toString() ?: ""
                 val artist = currentItem?.mediaMetadata?.artist?.toString() ?: ""
 
+                val isLiveActive = ctrl.isPlaying || (ctrl.playWhenReady && ctrl.playbackState != Player.STATE_IDLE && ctrl.playbackState != Player.STATE_ENDED)
+
                 val ret = JSObject()
                 ret.put("index", idx)
                 ret.put("stationId", stationId)
@@ -75,18 +96,20 @@ class NativeRadioPlugin : Plugin() {
                 ret.put("title", title)
                 ret.put("artist", artist)
                 ret.put("reason", reason)
-                ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
+                ret.put("isPlaying", isLiveActive)
                 notifyListeners("stationChanged", ret)
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
-                val ret = JSObject()
-                val idx = ctrl.currentMediaItemIndex
-                val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
-                ret.put("isPlaying", isPlaying)
-                ret.put("index", idx)
-                ret.put("stationId", currentItem?.mediaId ?: "")
-                notifyListeners("playbackStateChanged", ret)
+                dispatchPlaybackState()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                dispatchPlaybackState()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                dispatchPlaybackState()
             }
         })
     }
@@ -233,9 +256,13 @@ class NativeRadioPlugin : Plugin() {
         withController(call) { ctrl ->
             if (index in 0 until ctrl.mediaItemCount) {
                 lastMediaItemIndex = index
-                ctrl.seekToDefaultPosition(index)
-                ctrl.prepare()
-                ctrl.play()
+                if (ctrl.currentMediaItemIndex == index && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
+                    ctrl.play()
+                } else {
+                    ctrl.seekToDefaultPosition(index)
+                    ctrl.prepare()
+                    ctrl.play()
+                }
                 val ret = JSObject()
                 ret.put("index", index)
                 call.resolve(ret)
@@ -296,18 +323,31 @@ class NativeRadioPlugin : Plugin() {
 
             if (foundIndex != -1) {
                 lastMediaItemIndex = foundIndex
-                ctrl.seekToDefaultPosition(foundIndex)
-                ctrl.prepare()
-                ctrl.play()
+                if (ctrl.currentMediaItemIndex == foundIndex && (ctrl.isPlaying || ctrl.playbackState == Player.STATE_BUFFERING)) {
+                    ctrl.play()
+                } else {
+                    ctrl.seekToDefaultPosition(foundIndex)
+                    ctrl.prepare()
+                    ctrl.play()
+                }
             } else if (!url.isNullOrEmpty()) {
-                val effectiveId = stationId ?: url
+                val effectiveId = if (!stationId.isNullOrEmpty()) stationId else url
                 val newItem = createMediaItem(effectiveId, url, title, artist, artwork)
-                ctrl.addMediaItem(newItem)
-                val newIndex = ctrl.mediaItemCount - 1
-                lastMediaItemIndex = newIndex
-                ctrl.seekToDefaultPosition(newIndex)
-                ctrl.prepare()
-                ctrl.play()
+                if (ctrl.mediaItemCount == 0) {
+                    ctrl.setMediaItems(listOf(newItem), 0, 0L)
+                    ctrl.prepare()
+                    ctrl.play()
+                    lastMediaItemIndex = 0
+                } else {
+                    ctrl.addMediaItem(newItem)
+                    val targetIndex = ctrl.mediaItemCount - 1
+                    if (targetIndex >= 0) {
+                        ctrl.seekToDefaultPosition(targetIndex)
+                    }
+                    ctrl.prepare()
+                    ctrl.play()
+                    lastMediaItemIndex = targetIndex
+                }
             } else {
                 ctrl.play()
             }
@@ -365,7 +405,10 @@ class NativeRadioPlugin : Plugin() {
             val ret = JSObject()
             val idx = ctrl.currentMediaItemIndex
             val currentItem = if (idx in 0 until ctrl.mediaItemCount) ctrl.getMediaItemAt(idx) else ctrl.currentMediaItem
-            ret.put("isPlaying", ctrl.isPlaying || ctrl.playWhenReady)
+            val isPlaying = ctrl.isPlaying || (ctrl.playWhenReady && ctrl.playbackState == Player.STATE_BUFFERING)
+            ret.put("isPlaying", isPlaying)
+            ret.put("isBuffering", ctrl.playbackState == Player.STATE_BUFFERING)
+            ret.put("rawIsPlaying", ctrl.isPlaying)
             ret.put("index", idx)
             ret.put("stationId", currentItem?.mediaId ?: "")
             val uri = currentItem?.localConfiguration?.uri?.toString()

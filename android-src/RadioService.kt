@@ -38,7 +38,7 @@ import com.google.common.util.concurrent.ListenableFuture
 import java.io.ByteArrayOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.util.concurrent.CopyOnWriteArraySet
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -50,29 +50,41 @@ class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPl
     @Volatile var customArtist: String? = null
     @Volatile var customArtworkBytes: ByteArray? = null
 
-    private val listeners = CopyOnWriteArraySet<Player.Listener>()
+    private val listenerMap = ConcurrentHashMap<Player.Listener, Player.Listener>()
 
     override fun addListener(listener: Player.Listener) {
-        listeners.add(listener)
-        super.addListener(listener)
+        val wrapper = object : Player.Listener by listener {
+            override fun onMediaMetadataChanged(mediaMetadata: MediaMetadata) {
+                listener.onMediaMetadataChanged(getMediaMetadata())
+            }
+        }
+        listenerMap[listener] = wrapper
+        super.addListener(wrapper)
     }
 
     override fun removeListener(listener: Player.Listener) {
-        listeners.remove(listener)
-        super.removeListener(listener)
+        val wrapper = listenerMap.remove(listener) ?: listener
+        super.removeListener(wrapper)
     }
 
     fun updateLiveMetadata(title: String?, artist: String?, artworkBytes: ByteArray?) {
         this.customTitle = title
         this.customArtist = artist
         this.customArtworkBytes = artworkBytes
-        val currentMeta = getMediaMetadata()
-        for (listener in listeners) {
-            try {
-                listener.onMediaMetadataChanged(currentMeta)
-            } catch (e: Exception) {
-                Log.w("RadioService", "Error notifying onMediaMetadataChanged", e)
+        val notifyRunnable = Runnable {
+            val currentMeta = getMediaMetadata()
+            for (listener in listenerMap.keys) {
+                try {
+                    listener.onMediaMetadataChanged(currentMeta)
+                } catch (e: Exception) {
+                    Log.w("RadioService", "Error notifying onMediaMetadataChanged", e)
+                }
             }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            notifyRunnable.run()
+        } else {
+            Handler(Looper.getMainLooper()).post(notifyRunnable)
         }
     }
 
@@ -98,6 +110,29 @@ class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPl
     override fun getContentPosition(): Long = 0L
     override fun isCurrentMediaItemLive(): Boolean = true
     override fun isCurrentMediaItemDynamic(): Boolean = true
+    override fun isCurrentMediaItemSeekable(): Boolean = false
+
+    override fun getAvailableCommands(): Player.Commands {
+        val base = super.getAvailableCommands()
+        return base.buildUpon()
+            .add(Player.COMMAND_SEEK_TO_NEXT)
+            .add(Player.COMMAND_SEEK_TO_PREVIOUS)
+            .add(Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM)
+            .add(Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM)
+            .remove(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+            .build()
+    }
+
+    override fun isCommandAvailable(command: Int): Boolean {
+        return when (command) {
+            Player.COMMAND_SEEK_TO_NEXT,
+            Player.COMMAND_SEEK_TO_PREVIOUS,
+            Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+            Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM -> true
+            Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM -> false
+            else -> super.isCommandAvailable(command)
+        }
+    }
 
     override fun seekToNext() {
         seekToNextMediaItem()
@@ -105,6 +140,22 @@ class LiveMetadataForwardingPlayer(private val player: ExoPlayer) : ForwardingPl
 
     override fun seekToPrevious() {
         seekToPreviousMediaItem()
+    }
+
+    override fun seekToNextMediaItem() {
+        if (player.mediaItemCount <= 0) return
+        val nextIndex = (player.currentMediaItemIndex + 1) % player.mediaItemCount
+        player.seekToDefaultPosition(nextIndex)
+        player.prepare()
+        player.play()
+    }
+
+    override fun seekToPreviousMediaItem() {
+        if (player.mediaItemCount <= 0) return
+        val prevIndex = (player.currentMediaItemIndex - 1 + player.mediaItemCount) % player.mediaItemCount
+        player.seekToDefaultPosition(prevIndex)
+        player.prepare()
+        player.play()
     }
 }
 
@@ -116,6 +167,8 @@ class RadioService : MediaSessionService() {
     private var connectivityManager: ConnectivityManager? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var shouldResumeOnNetwork = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private var isServiceDestroyed = false
     private val artworkExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val artworkCache = object : LruCache<String, ByteArray>(25) {}
 
@@ -164,9 +217,7 @@ class RadioService : MediaSessionService() {
 
         player.addListener(object : Player.Listener {
             override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
-                forwardingPlayer.customTitle = null
-                forwardingPlayer.customArtist = null
-                forwardingPlayer.customArtworkBytes = null
+                forwardingPlayer.updateLiveMetadata(null, null, null)
             }
 
             override fun onPlayerError(error: PlaybackException) {
@@ -182,8 +233,8 @@ class RadioService : MediaSessionService() {
                     if (!isNetworkConnected()) {
                         shouldResumeOnNetwork = true
                     } else {
-                        Handler(Looper.getMainLooper()).postDelayed({
-                            if (player.playWhenReady && player.mediaItemCount > 0) {
+                        mainHandler.postDelayed({
+                            if (!isServiceDestroyed && player.playWhenReady && player.mediaItemCount > 0) {
                                 player.seekToDefaultPosition()
                                 player.prepare()
                                 player.play()
@@ -215,8 +266,8 @@ class RadioService : MediaSessionService() {
 
             networkCallback = object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    Handler(Looper.getMainLooper()).post {
-                        if (shouldResumeOnNetwork) {
+                    mainHandler.post {
+                        if (!isServiceDestroyed && shouldResumeOnNetwork) {
                             shouldResumeOnNetwork = false
                             if (player.mediaItemCount > 0) {
                                 player.seekToDefaultPosition()
@@ -228,8 +279,8 @@ class RadioService : MediaSessionService() {
                 }
 
                 override fun onLost(network: Network) {
-                    Handler(Looper.getMainLooper()).post {
-                        if (player.playWhenReady) {
+                    mainHandler.post {
+                        if (!isServiceDestroyed && player.playWhenReady) {
                             shouldResumeOnNetwork = true
                         }
                     }
@@ -314,39 +365,59 @@ class RadioService : MediaSessionService() {
         }
     }
 
-    private fun downloadAndCompressArtwork(urlString: String): ByteArray? {
-        var connection: HttpURLConnection? = null
-        return try {
-            val url = URL(urlString)
-            connection = url.openConnection() as HttpURLConnection
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 8_000
-            connection.instanceFollowRedirects = true
-            connection.doInput = true
-            connection.connect()
-            if (connection.responseCode in 200..299) {
-                connection.inputStream.use { input ->
-                    val originalBitmap = BitmapFactory.decodeStream(input) ?: return null
-                    val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 300, 300, true)
-                    val out = ByteArrayOutputStream()
-                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
-                    if (scaledBitmap != originalBitmap) {
-                        originalBitmap.recycle()
-                    }
-                    scaledBitmap.recycle()
-                    out.toByteArray()
-                }
-            } else {
-                null
-            }
-        } catch (e: Exception) {
-            Log.w("RadioService", "Artwork download/compress error for $urlString: ${e.message}")
-            null
-        } finally {
+    private fun downloadAndCompressArtwork(initialUrl: String): ByteArray? {
+        var currentUrl = initialUrl
+        var redirects = 0
+        while (redirects < 5) {
+            var connection: HttpURLConnection? = null
             try {
-                connection?.disconnect()
-            } catch (e: Exception) {}
+                val url = URL(currentUrl)
+                connection = url.openConnection() as HttpURLConnection
+                connection.connectTimeout = 8_000
+                connection.readTimeout = 8_000
+                connection.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Mobile Safari/537.36"
+                )
+                connection.instanceFollowRedirects = true
+                connection.doInput = true
+                connection.connect()
+
+                val code = connection.responseCode
+                if (code in 301..308) {
+                    val location = connection.getHeaderField("Location")
+                    if (!location.isNullOrEmpty()) {
+                        currentUrl = URL(url, location).toExternalForm()
+                        redirects++
+                        continue
+                    }
+                }
+
+                if (code in 200..299) {
+                    return connection.inputStream.use { input ->
+                        val originalBitmap = BitmapFactory.decodeStream(input) ?: return null
+                        val scaledBitmap = Bitmap.createScaledBitmap(originalBitmap, 300, 300, true)
+                        val out = ByteArrayOutputStream()
+                        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 82, out)
+                        if (scaledBitmap != originalBitmap) {
+                            originalBitmap.recycle()
+                        }
+                        scaledBitmap.recycle()
+                        out.toByteArray()
+                    }
+                } else {
+                    return null
+                }
+            } catch (e: Exception) {
+                Log.w("RadioService", "Artwork download/compress error for $initialUrl: ${e.message}")
+                return null
+            } finally {
+                try {
+                    connection?.disconnect()
+                } catch (e: Exception) {}
+            }
         }
+        return null
     }
 
     private fun isNetworkConnected(): Boolean {
@@ -365,6 +436,8 @@ class RadioService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        isServiceDestroyed = true
+        mainHandler.removeCallbacksAndMessages(null)
         try {
             networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         } catch (e: Exception) {
